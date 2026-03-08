@@ -1,0 +1,11 @@
+build/
+bin/
+*.conf
+.idea/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
