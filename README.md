@@ -1,6 +1,6 @@
 # Ghost Proxifier
 
-进程级透明代理工具。通过 DLL 注入 Hook Winsock API，将目标进程的所有网络流量透明转发到 **HTTP** 代理，无需修改目标程序。
+进程级透明代理工具。通过 DLL 注入 Hook Winsock API，将目标进程的所有网络流量透明转发到 **HTTP** 代理，无需修改路由表、无需指定路由规则。
 
 ## 项目背景
 
