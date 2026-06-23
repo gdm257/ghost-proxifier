@@ -1,0 +1,14 @@
+{
+  "dns": {
+    "enabled": true,
+    "server": "8.8.8.8",
+    "port": 53
+  },
+  "upstream": [
+    {"id": "clash", "name": "Clash Verge Rev", "type": "Mixed", "addr": "127.0.0.1:7897", "active": false, "builtin": true},
+    {"id": "v2rayn", "name": "v2rayN", "type": "Mixed", "addr": "127.0.0.1:10807", "active": false, "builtin": true},
+    {"id": "nekobox", "name": "NekoBox", "type": "Mixed", "addr": "127.0.0.1:2080", "active": false, "builtin": true},
+    {"id": "clashwin", "name": "Clash for Windows", "type": "Mixed", "addr": "127.0.0.1:7890", "active": false, "builtin": true}
+  ],
+  "targets": []
+}
