@@ -29,6 +29,7 @@ install_manifest.txt
 *.lnk
 
 # Compiled
+proc-proxy/
 *.obj
 *.lib
 *.dll

@@ -20,12 +20,22 @@ cd ghost-proxifier
 .\compile.bat
 ```
 
-`compile.bat` builds both 64-bit and 32-bit targets. Output lands in `build_x64\bin\Release\` and `build_x86\bin\Release\`.
+`compile.bat` checks for submodules, then builds both 64-bit and 32-bit targets.
 
-For a manual build:
+Output binaries:
+
+| Binary | x64 Path | x86 Path |
+|--------|----------|----------|
+| CLI tool | `build_x64\cli\Release\ghost-proxifier.exe` | `build_x86\cli\Release\ghost-proxifier_x86.exe` |
+| Core DLL | `build_x64\core\Release\ghost_core_x64.dll` | `build_x86\core\Release\ghost_core_x86.dll` |
+| Launcher | `build_x64\core\Release\ghost_launcher_x64.exe` | `build_x86\core\Release\ghost_launcher_x86.exe` |
+| DNS dump | `build_x64\core\Release\ghost_dns_dump.exe` | — |
+
+For a manual build (x64 only):
 
 ```powershell
-mkdir build_x64; cd build_x64
+mkdir build_x64
+cd build_x64
 cmake .. -G "Visual Studio 17 2022" -A x64
 cmake --build . --config Release
 ```
