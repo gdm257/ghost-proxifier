@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <algorithm>
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "utils.h"
@@ -49,31 +50,21 @@ static std::vector<DWORD> FindPidsByName(const std::wstring& name) {
     return result;
 }
 
-// Resolve PID from argument (either numeric PID or process name)
-static bool ResolvePid(const wchar_t* arg, DWORD& outPid) {
+// Resolve PIDs from argument (numeric PID or process name, may return multiple)
+static bool ResolvePids(const wchar_t* arg, std::vector<DWORD>& outPids) {
     // Try numeric PID first
     wchar_t* end = nullptr;
     DWORD pid = wcstoul(arg, &end, 10);
     if (end && *end == 0 && pid > 0) {
-        outPid = pid;
+        outPids.push_back(pid);
         return true;
     }
 
-    // Try process name lookup
-    auto pids = FindPidsByName(arg);
-    if (pids.size() == 1) {
-        outPid = pids[0];
-        return true;
-    }
+    // Process name lookup
+    outPids = FindPidsByName(arg);
+    if (!outPids.empty()) return true;
 
-    if (pids.empty()) {
-        fprintf(stderr, "Error: No process found matching '%ls'\n", arg);
-    } else {
-        fprintf(stderr, "Error: Multiple processes match '%ls'. Use PID:\n", arg);
-        for (auto pid : pids) {
-            fprintf(stderr, "  %lu\n", pid);
-        }
-    }
+    fprintf(stderr, "Error: No process found matching '%ls'\n", arg);
     return false;
 }
 
@@ -169,23 +160,29 @@ int cmd_inject(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    DWORD targetPid = 0;
-    if (!ResolvePid(argv[argIdx], targetPid)) {
+    std::vector<DWORD> targets;
+    if (!ResolvePids(argv[argIdx], targets)) {
         return 1;
     }
 
-    // Build list of PIDs to inject
+    // Inject all resolved PIDs (by name may match multiple processes)
     std::vector<DWORD> pids;
-    pids.push_back(targetPid);
-    if (treeMode) {
-        auto children = GetProcessTree(targetPid);
-        pids.insert(pids.end(), children.begin(), children.end());
+    for (auto pid : targets) {
+        pids.push_back(pid);
+        if (treeMode) {
+            auto children = GetProcessTree(pid);
+            pids.insert(pids.end(), children.begin(), children.end());
+        }
     }
 
+    // Deduplicate (targets may overlap with children)
+    std::sort(pids.begin(), pids.end());
+    pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
+
     printf(treeMode
-           ? "Injecting %zu processes (PID %lu + tree)...\n"
-           : "Injecting PID %lu...\n",
-           pids.size(), targetPid);
+           ? "Injecting %zu processes (%zu target(s) + trees)...\n"
+           : "Injecting %zu process(es)...\n",
+           pids.size(), targets.size());
 
     int successCount = 0;
     int failCount = 0;
@@ -211,78 +208,88 @@ int cmd_eject(int argc, wchar_t* argv[]) {
     }
 
     DWORD pid = 0;
-    if (!ResolvePid(argv[2], pid)) {
+    std::vector<DWORD> ejectPids;
+    if (!ResolvePids(argv[2], ejectPids)) {
         return 1;
     }
 
-    printf("Ejecting ghost_core from PID %lu...\n", pid);
+    // Eject from all matching processes
+    int okCount = 0, failCount = 0;
+    for (auto pid : ejectPids) {
+        printf("Ejecting ghost_core from PID %lu...\n", pid);
+        bool ok = false;
 
-    HANDLE h = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-        PROCESS_VM_READ | PROCESS_VM_OPERATION,
-        FALSE, pid);
-    if (!h) {
-        fprintf(stderr, "Error: Cannot open process %lu (error %lu)\n", pid, GetLastError());
-        return 1;
-    }
+        HANDLE h = OpenProcess(
+            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+            PROCESS_VM_READ | PROCESS_VM_OPERATION,
+            FALSE, pid);
+        if (!h) {
+            fprintf(stderr, "  Error: Cannot open process %lu (error %lu)\n", pid, GetLastError());
+            failCount++;
+            continue;
+        }
 
-    HMODULE mods[1024];
-    DWORD needed = 0;
-    bool found = false;
+        HMODULE mods[1024];
+        DWORD needed = 0;
+        bool found = false;
 
-    if (EnumProcessModules(h, mods, sizeof(mods), &needed)) {
-        DWORD count = needed / sizeof(HMODULE);
-        if (count > 1024) count = 1024;
+        if (EnumProcessModules(h, mods, sizeof(mods), &needed)) {
+            DWORD count = needed / sizeof(HMODULE);
+            if (count > 1024) count = 1024;
 
-        for (DWORD i = 0; i < count; i++) {
-            wchar_t name[MAX_PATH] = {};
-            if (GetModuleBaseNameW(h, mods[i], name, MAX_PATH)) {
-                if (wcsstr(name, L"ghost_core")) {
-                    printf("  Found: %ls at 0x%p\n", name, mods[i]);
+            for (DWORD i = 0; i < count; i++) {
+                wchar_t name[MAX_PATH] = {};
+                if (GetModuleBaseNameW(h, mods[i], name, MAX_PATH)) {
+                    if (wcsstr(name, L"ghost_core")) {
+                        printf("  Found: %ls at 0x%p\n", name, mods[i]);
 
-                    // Call FreeLibrary in the remote process
-                    LPTHREAD_START_ROUTINE freeLib =
-                        (LPTHREAD_START_ROUTINE)GetProcAddress(
-                            GetModuleHandleA("kernel32.dll"), "FreeLibrary");
+                        LPTHREAD_START_ROUTINE freeLib =
+                            (LPTHREAD_START_ROUTINE)GetProcAddress(
+                                GetModuleHandleA("kernel32.dll"), "FreeLibrary");
 
-                    if (!freeLib) {
-                        fprintf(stderr, "Error: Cannot find FreeLibrary address\n");
-                        CloseHandle(h);
-                        return 1;
+                        if (!freeLib) {
+                            fprintf(stderr, "  Error: Cannot find FreeLibrary address\n");
+                            break;
+                        }
+
+                        HANDLE t = CreateRemoteThread(h, NULL, 0, freeLib,
+                                                      mods[i], 0, NULL);
+                        if (!t) {
+                            fprintf(stderr, "  Error: Cannot create remote thread (error %lu)\n",
+                                    GetLastError());
+                            break;
+                        }
+
+                        WaitForSingleObject(t, 5000);
+                        DWORD exitCode = 0;
+                        GetExitCodeThread(t, &exitCode);
+                        CloseHandle(t);
+
+                        if (exitCode) {
+                            printf("  Unloaded successfully\n");
+                            found = true;
+                            ok = true;
+                        } else {
+                            fprintf(stderr, "  Error: FreeLibrary returned NULL\n");
+                        }
+                        break;
                     }
-
-                    HANDLE t = CreateRemoteThread(h, NULL, 0, freeLib,
-                                                  mods[i], 0, NULL);
-                    if (!t) {
-                        fprintf(stderr, "Error: Cannot create remote thread (error %lu)\n",
-                                GetLastError());
-                        CloseHandle(h);
-                        return 1;
-                    }
-
-                    WaitForSingleObject(t, 5000);
-                    DWORD exitCode = 0;
-                    GetExitCodeThread(t, &exitCode);
-                    CloseHandle(t);
-
-                    if (exitCode) {
-                        printf("  Unloaded successfully\n");
-                        found = true;
-                    } else {
-                        fprintf(stderr, "Error: FreeLibrary returned NULL\n");
-                    }
-                    break;
                 }
             }
         }
+
+        CloseHandle(h);
+
+        if (!found) {
+            fprintf(stderr, "  Error: ghost_core.dll not found in process %lu\n", pid);
+            failCount++;
+        } else if (ok) {
+            okCount++;
+        } else {
+            failCount++;
+        }
     }
 
-    CloseHandle(h);
-
-    if (!found) {
-        fprintf(stderr, "Error: ghost_core.dll not found in process %lu\n", pid);
-        return 1;
-    }
-
-    return 0;
+    printf("Eject done: %d succeeded, %d failed\n", okCount, failCount);
+    return failCount > 0 ? 1 : 0;
 }
