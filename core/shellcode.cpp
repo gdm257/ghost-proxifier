@@ -67,4 +67,4 @@ const unsigned char kThreadCtxX64[] = {
 // x86 shellcode will follow the same pattern as x64 but uses
 // call/pop-ebx for position-independent data access on x86.
 // TODO: add x86 shellcode matching proxychains-windows' g_EntryDetourX86.
-const unsigned char kThreadCtxX86[] = {};
+const unsigned char kThreadCtxX86[] = { 0x00 };

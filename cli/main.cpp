@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string>
+#include "utils.h"
 
 void PrintUsage() {
     printf("Ghost Proxifier - Process-level transparent proxy\n\n");

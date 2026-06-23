@@ -1,5 +1,4 @@
-include_directories(MinHook/include)
-add_subdirectory(MinHook)
+include_directories(${CMAKE_SOURCE_DIR}/minhook/include)
 
 set(CORE_SOURCES
     ghost_core.cpp
