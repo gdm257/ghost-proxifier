@@ -11,7 +11,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (pid == 0) return 7;
 
-    HANDLE h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    HANDLE h = OpenProcess(
+        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+        FALSE, pid);
     if (!h) return 2;
 
     void* loadLibraryAddr = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryW");

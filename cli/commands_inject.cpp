@@ -17,17 +17,27 @@ static std::wstring GetExeDir() {
 }
 
 // Determine if target process is 64-bit
+// On 64-bit Windows: check if process is NOT running under WOW64
 static bool IsProcess64Bit(DWORD pid) {
 #ifdef _WIN64
-    HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!h) return true; // Assume x64 if we can't query
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) {
+        // Can't query — try native API as fallback using the PID itself.
+        // On x64 Windows, if IsWow64Process fails, we can infer from the OS:
+        // the system can create both x64 and x86 processes. Default to x64
+        // for system/high-integrity processes, but x86 is also possible.
+        return true; // best guess for system processes
+    }
     BOOL isWow64 = FALSE;
-    BOOL ok = IsWow64Process(h, &isWow64);
+    if (!IsWow64Process(h, &isWow64)) {
+        CloseHandle(h);
+        return true; // Can't determine — assume native (x64)
+    }
     CloseHandle(h);
-    return ok && !isWow64; // isWow64==TRUE means 32-bit on 64-bit OS
+    return !isWow64; // TRUE if native x64, FALSE if running under WOW64 (x86)
 #else
     (void)pid;
-    return false; // 32-bit CLI: processes are 32-bit (or we can only handle 32-bit)
+    return false;
 #endif
 }
 
