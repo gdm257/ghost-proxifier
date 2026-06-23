@@ -1,0 +1,50 @@
+#pragma once
+#include <windows.h>
+#include <string>
+#include <vector>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
+// Config path relative to exe
+std::wstring GetConfigPath();
+
+// Read/write config.json
+json LoadConfig();
+void SaveConfig(const json& cfg);
+
+// Process info struct
+struct ProcessInfo {
+    DWORD pid = 0;
+    std::wstring name;
+    std::wstring path;
+    DWORD parentPid = 0;
+    bool injected = false;
+    int latency = -1;
+    uint64_t up = 0;
+    uint64_t down = 0;
+    int conns = 0;
+    std::string node = "Direct";
+    std::string dns = "System";
+};
+
+// Enumerate running processes
+std::vector<ProcessInfo> EnumerateProcesses();
+
+// Get process tree (children of a PID, recursively)
+std::vector<DWORD> GetProcessTree(DWORD parentPid);
+
+// Check if a PID has ghost_core.dll loaded
+bool IsProcessInjected(DWORD pid);
+
+// UDP communication with injected DLLs
+void StartUdpListener(uint16_t port);
+void StopUdpListener();
+json GetUdpStats();
+
+// System proxy toggle (registry + InternetSetOption)
+void SetSystemProxy(bool enable, const std::string& proxyAddr = "127.0.0.1:7897");
+bool IsSystemProxyEnabled();
+
+// DNS leak check
+bool CheckDnsLeak();
