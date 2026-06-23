@@ -58,12 +58,13 @@ echo.
 echo ========================================
 echo  Build complete!
 echo.
-echo  Outputs:
-echo    build_x64\cli\Release\ghost-proxifier.exe
-echo    build_x64\core\Release\ghost_core_x64.dll
-echo    build_x64\core\Release\ghost_launcher_x64.exe
-echo    build_x64\core\Release\ghost_dns_dump.exe
-echo    build_x86\cli\Release\ghost-proxifier_x86.exe
-echo    build_x86\core\Release\ghost_core_x86.dll
-echo    build_x86\core\Release\ghost_launcher_x86.exe
+echo  Outputs (x64):
+echo    bin\Release\ghost-proxifier.exe
+echo    bin\Release\ghost_core_x64.dll
+echo    bin\Release\ghost_launcher_x64.exe
+echo    bin\Release\ghost_dns_dump.exe
+echo  Outputs (x86):
+echo    bin\Release\ghost-proxifier_x86.exe
+echo    bin\Release\ghost_core_x86.dll
+echo    bin\Release\ghost_launcher_x86.exe
 echo ========================================
