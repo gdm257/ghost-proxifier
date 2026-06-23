@@ -158,43 +158,85 @@ compile.bat
 ```
 
 产物输出到 `bin/` 目录：
-- `ghost_core.dll` — 注入到目标进程的 Hook DLL
-- `ghost-proxifier.exe` — 注入器 & 日志服务器
+- `ghost-proxifier.exe` — CLI 管理工具 (x64)
+- `ghost_core_x64.dll` / `ghost_core_x86.dll` — 注入到目标进程的 Hook DLL
+- `ghost_launcher_x64.exe` / `ghost_launcher_x86.exe` — 注入辅助工具
+- `ghost_dns_dump.exe` — DNS 诊断工具
 
 ## 使用
 
 ### 基本用法
 
 ```cmd
-# 注入指定进程（自动补全 .exe）
-ghost-proxifier.exe -p chrome -u 127.0.0.1:2080
+# 列出所有进程及代理状态
+ghost-proxifier list
 
-# 注入指定 PID
-ghost-proxifier.exe -p 12345 -u 127.0.0.1:2080
+# 按进程名注入
+ghost-proxifier inject chrome.exe
 
-# 持续监控，自动注入新进程
-ghost-proxifier.exe -p chrome -u 127.0.0.1:2080 --watch
+# 按 PID 注入
+ghost-proxifier inject 1234
 
-# 指定上游代理
-ghost-proxifier.exe -p chrome -u 127.0.0.1:2080
+# 注入进程及其所有子进程（递归）
+ghost-proxifier inject --tree chrome.exe
 
-# 查看已注入的进程
-ghost-proxifier.exe -s
+# 卸载 DLL
+ghost-proxifier eject 1234
 
-# 仅启动日志服务器
-ghost-proxifier.exe -l
+# 查看全局状态
+ghost-proxifier status
+
+# 系统代理开关
+ghost-proxifier proxy on
+ghost-proxifier proxy off
+
+# 实时流量监控
+ghost-proxifier monitor
 ```
 
-### 完整参数
+### 配置管理
 
-| 参数 | 说明 |
+```cmd
+# 查看当前配置
+ghost-proxifier config show
+
+# 添加上游代理节点
+ghost-proxifier config upstream add myproxy 127.0.0.1:1080
+
+# 切换活跃节点
+ghost-proxifier config upstream use myproxy
+
+# 删除节点
+ghost-proxifier config upstream rm myproxy
+
+# 设置 DNS 服务器
+ghost-proxifier config dns 1.1.1.1
+```
+
+### DNS 检测
+
+```cmd
+# DNS 泄露检测
+ghost-proxifier dns check
+```
+
+### 完整命令
+
+| 命令 | 说明 |
 |------|------|
-| `-p <name\|pid>` | 目标进程名或 PID，可多次指定 |
-| `-u <addr:port>` | 上游 HTTP CONNECT 代理地址（**必填**），如 127.0.0.1:2080 |
-| `--watch` | 持续扫描并注入新匹配的进程 |
-| `-s, --status` | 列出所有已注入 ghost_core.dll 的进程 |
-| `-l, --log-only` | 仅启动日志服务器，不注入 |
-| `-h, --help` | 显示帮助 |
+| `list` | 列出所有进程及代理状态 |
+| `inject <pid\|name>` | 注入 ghost_core.dll 到指定进程 |
+| `inject --tree <pid\|name>` | 注入进程及其所有子进程 |
+| `eject <pid>` | 从进程卸载 ghost_core.dll |
+| `status` | 显示全局代理状态和流量统计 |
+| `proxy on\|off` | 开启/关闭系统代理 |
+| `config show` | 显示当前配置 |
+| `config upstream add <name> <addr>` | 添加上游代理节点 |
+| `config upstream rm <name>` | 删除上游代理节点 |
+| `config upstream use <name>` | 切换活跃上游节点 |
+| `config dns <server>` | 设置 DNS 服务器 |
+| `dns check` | DNS 泄露检测 |
+| `monitor` | 实时流量监控 (Ctrl+C 退出) |
 
 ### 日志示例
 

@@ -15,12 +15,6 @@ set(CLI_SOURCES
 add_executable(ghost-proxifier ${CLI_SOURCES})
 target_include_directories(ghost-proxifier PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(ghost-proxifier ws2_32 wininet psapi)
+set_target_properties(ghost-proxifier PROPERTIES OUTPUT_NAME "ghost-proxifier")
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(ghost-proxifier PROPERTIES OUTPUT_NAME "ghost-proxifier")
-else()
-    set_target_properties(ghost-proxifier PROPERTIES OUTPUT_NAME "ghost-proxifier_x86")
-endif()
-
-# Install rule
 install(TARGETS ghost-proxifier RUNTIME DESTINATION .)

@@ -35,7 +35,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 cd ..
 
-REM Build x86
+REM Build x86 (ghost_core_x86.dll + ghost_launcher_x86.exe)
 echo.
 echo [3/3] Building x86 Release...
 mkdir build_x86 2>nul
@@ -58,13 +58,11 @@ echo.
 echo ========================================
 echo  Build complete!
 echo.
-echo  Outputs (x64):
-echo    bin\Release\ghost-proxifier.exe
-echo    bin\Release\ghost_core_x64.dll
-echo    bin\Release\ghost_launcher_x64.exe
-echo    bin\Release\ghost_dns_dump.exe
-echo  Outputs (x86):
-echo    bin\Release\ghost-proxifier_x86.exe
-echo    bin\Release\ghost_core_x86.dll
-echo    bin\Release\ghost_launcher_x86.exe
+echo  Outputs (bin/):
+echo    ghost-proxifier.exe       (x64 CLI)
+echo    ghost_core_x64.dll        (x64 proxy DLL)
+echo    ghost_core_x86.dll        (x86 proxy DLL)
+echo    ghost_launcher_x64.exe    (x64 injector)
+echo    ghost_launcher_x86.exe    (x86 injector)
+echo    ghost_dns_dump.exe        (DNS diag)
 echo ========================================
