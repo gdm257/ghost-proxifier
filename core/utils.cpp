@@ -1,17 +1,5 @@
 #include "globals.h"
 
-// --- Bucket-based overlapped I/O tracking ---
-int GetBucketIndex(LPWSAOVERLAPPED ov) {
-    return ((uintptr_t)ov >> 4) % OVERLAPPED_BUCKETS;
-}
-
-void RegisterOverlapped(LPWSAOVERLAPPED ov, OverlappedOp op) {
-    if (!ov) return;
-    int idx = GetBucketIndex(ov);
-    std::lock_guard<std::mutex> lock(g_OverlappedMutexes[idx]);
-    g_PendingOverlappedBuckets[idx][ov] = op;
-}
-
 // --- IP-Domain Mapping ---
 void RecordIpDomainMapping(DWORD net_ip, const std::string& domain) {
     if (domain.empty()) return;
@@ -29,27 +17,86 @@ bool GetDomainByRealIp(DWORD net_ip, std::string& domain) {
     return false;
 }
 
-// --- NetLog: UDP-based logging to port 45002 (consumed by CLI) ---
+// --- UDP Log Pipeline ---
+SOCKET g_LogSocket  = INVALID_SOCKET;
+DWORD  g_InjectTick = 0;
+int    g_LogPort    = 0;
+
+static CRITICAL_SECTION s_LogLock;
+static bool s_LogLockInit = false;
+
+void InitLogging() {
+    if (g_LogPort <= 0) return;
+    InitializeCriticalSection(&s_LogLock);
+    s_LogLockInit = true;
+
+    g_LogSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (g_LogSocket == INVALID_SOCKET) return;
+
+    // Non-blocking so a full kernel buffer never stalls a hook
+    u_long mode = 1;
+    ioctlsocket(g_LogSocket, FIONBIO, &mode);
+
+    // Connected UDP — use send() instead of sendto()
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_port = htons((u_short)g_LogPort);
+    connect(g_LogSocket, (sockaddr*)&addr, sizeof(addr));
+}
+
 void NetLog(const char* format, ...) {
-    char buffer[1024];
+    if (g_LogSocket == INVALID_SOCKET || !s_LogLockInit) return;
+
+    // Relative timestamp since injection
+    DWORD elapsed = GetTickCount() - g_InjectTick;
+    unsigned int sec  = elapsed / 1000;
+    unsigned int msec = elapsed % 1000;
+
+    // Format the message body first
+    char body[1024];
     va_list args;
     va_start(args, format);
-    vsprintf_s(buffer, format, args);
+    vsprintf_s(body, format, args);
     va_end(args);
 
-    sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(45002);
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    // Extract TAG from the formatted body: first [...] token
+    const char* tagStart = NULL;
+    int tagLen = 0;
+    const char* afterTag = body;
+    if (body[0] == '[') {
+        tagStart = body;
+        const char* p = body + 1;
+        while (*p && *p != ']') p++;
+        if (*p == ']') {
+            tagLen = (int)(p - tagStart + 1);
+            afterTag = p + 1;
+            while (*afterTag == ' ' || *afterTag == ':') afterTag++;
+        }
+    }
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    char line[1200];
-    int len = sprintf_s(line, "[%02d:%02d:%02d.%03d][%04d] %s", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId(), buffer);
+    // Assemble packet: "[REL_TS] [PID:TID] TAG message"
+    char pkt[1400];
+    int pktLen;
+    if (tagStart && tagLen > 0) {
+        pktLen = sprintf_s(pkt, sizeof(pkt),
+            "[%03u.%03u] [%lu:%lu] %.*s %s",
+            sec, msec,
+            GetCurrentProcessId(), GetCurrentThreadId(),
+            tagLen, tagStart, afterTag);
+    } else {
+        pktLen = sprintf_s(pkt, sizeof(pkt),
+            "[%03u.%03u] [%lu:%lu] [LOG] %s",
+            sec, msec,
+            GetCurrentProcessId(), GetCurrentThreadId(),
+            body);
+    }
 
-    std::lock_guard<std::mutex> lock(g_UdpMutex);
-    if (g_CommonUdpSocket != INVALID_SOCKET) {
-        sendto(g_CommonUdpSocket, line, len, 0, (sockaddr*)&addr, sizeof(addr));
+    // Best-effort non-blocking send
+    if (pktLen > 0 && pktLen < (int)sizeof(pkt)) {
+        EnterCriticalSection(&s_LogLock);
+        send(g_LogSocket, pkt, pktLen, 0);
+        LeaveCriticalSection(&s_LogLock);
     }
 }
 
@@ -80,15 +127,6 @@ DWORD GetParentProcessId() {
     }
     CloseHandle(h);
     return pPid;
-}
-
-// --- InitUdpSocket: creates the shared UDP socket for config updates and logging ---
-void InitUdpSocket() {
-    std::lock_guard<std::mutex> lock(g_UdpMutex);
-    if (g_CommonUdpSocket != INVALID_SOCKET) return;
-    g_CommonUdpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    DWORD timeout = 500;
-    setsockopt(g_CommonUdpSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 }
 
 // --- SyncSend: blocking send over a possibly non-blocking socket ---
@@ -128,12 +166,10 @@ bool SyncRecvResponse(SOCKET s, std::string& resp) {
             FD_SET(s, &rfds);
             timeval tv = { 5, 0 };
             if (select(0, &rfds, NULL, NULL, &tv) <= 0) {
-                NetLog("[Proxy] SyncRecvResponse timeout");
                 return false;
             }
         }
         else {
-            NetLog("[Proxy] SyncRecvResponse failed: %d (n=%d)", WSAGetLastError(), n);
             return false;
         }
         if (resp.size() > 2048) return false;
@@ -185,9 +221,5 @@ std::string GetDnsName(const char* buf, int& offset, int total_len) {
 }
 
 // --- Global variable definitions ---
-SOCKET g_CommonUdpSocket = INVALID_SOCKET;
-std::mutex g_UdpMutex;
 std::unordered_map<DWORD, std::string> g_IpToDomainMap;
 std::mutex g_IpMapMutex;
-std::unordered_map<LPWSAOVERLAPPED, OverlappedOp> g_PendingOverlappedBuckets[OVERLAPPED_BUCKETS];
-std::mutex g_OverlappedMutexes[OVERLAPPED_BUCKETS];

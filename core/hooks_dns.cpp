@@ -9,7 +9,7 @@ INT WSAAPI hook_getaddrinfo(PCSTR pNodeName, PCSTR pServiceName, const ADDRINFOA
     PerformLazyInitialization();
     // DIAGNOSTIC: always log domain resolution to confirm hook is active
     if (pNodeName && inet_addr(pNodeName) == INADDR_NONE) {
-        NetLog("[DNS-HOOK] getaddrinfo(%s) called, dnsMode=%s", pNodeName, g_Config.DnsMode.c_str());
+        //NetLog("[DNS-HOOK] getaddrinfo(%s) called, dnsMode=%s", pNodeName, g_Config.DnsMode.c_str());
     }
     // If not a domain name (NULL or already an IP), pass through
     if (!pNodeName || inet_addr(pNodeName) != INADDR_NONE) {
@@ -63,7 +63,7 @@ INT WSAAPI hook_GetAddrInfoW(PCWSTR pNodeName, PCWSTR pServiceName, const ADDRIN
     }
     char ascii_node[1024] = { 0 };
     WideCharToMultiByte(CP_UTF8, 0, pNodeName, -1, ascii_node, sizeof(ascii_node), NULL, NULL);
-    NetLog("[DNS-HOOK] GetAddrInfoW(%s) called, dnsMode=%s", ascii_node, g_Config.DnsMode.c_str());
+    //NetLog("[DNS-HOOK] GetAddrInfoW(%s) called, dnsMode=%s", ascii_node, g_Config.DnsMode.c_str());
     // If already an IP address, pass through
     if (inet_addr(ascii_node) != INADDR_NONE) {
         return real_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
@@ -122,7 +122,7 @@ struct hostent* WSAAPI hook_gethostbyname(const char* name) {
         std::lock_guard<std::mutex> lock(g_ConfigMutex);
         dnsMode = g_Config.DnsMode;
     }
-    NetLog("[DNS-HOOK] gethostbyname(%s) called, dnsMode=%s", name, dnsMode.c_str());
+    //NetLog("[DNS-HOOK] gethostbyname(%s) called, dnsMode=%s", name, dnsMode.c_str());
     std::vector<DWORD> ips = dnsMode == "dot" ? ProxyDnsResolve(domain.c_str()) : std::vector<DWORD>();
     if (!ips.empty()) {
         // Record all IP-domain mappings
@@ -173,7 +173,7 @@ INT WSAAPI hook_GetAddrInfoExW(PCWSTR pName, PCWSTR pServiceName, DWORD dwNameSp
     }
     char ascii_node[1024] = { 0 };
     WideCharToMultiByte(CP_UTF8, 0, pName, -1, ascii_node, sizeof(ascii_node), NULL, NULL);
-    NetLog("[DNS-HOOK] GetAddrInfoExW(%s) called, dnsMode=%s", ascii_node, g_Config.DnsMode.c_str());
+    //NetLog("[DNS-HOOK] GetAddrInfoExW(%s) called, dnsMode=%s", ascii_node, g_Config.DnsMode.c_str());
 
     if (inet_addr(ascii_node) != INADDR_NONE) {
         return real_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId, pHints, ppResult,
@@ -240,7 +240,7 @@ DNS_STATUS WINAPI hook_DnsQuery_W(PCWSTR pszName, WORD wType, DWORD Options,
 
     char ascii_node[1024] = { 0 };
     WideCharToMultiByte(CP_UTF8, 0, pszName, -1, ascii_node, sizeof(ascii_node), NULL, NULL);
-    NetLog("[DNS-HOOK] DnsQuery_W(%s, type=%d) called, dnsMode=%s", ascii_node, (int)wType, g_Config.DnsMode.c_str());
+    //NetLog("[DNS-HOOK] DnsQuery_W(%s, type=%d) called, dnsMode=%s", ascii_node, (int)wType, g_Config.DnsMode.c_str());
 
     if (inet_addr(ascii_node) != INADDR_NONE) {
         return real_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
@@ -320,7 +320,7 @@ DNS_STATUS WINAPI hook_DnsQuery_A(PCSTR pszName, WORD wType, DWORD Options,
         return real_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
     }
 
-    NetLog("[DNS-HOOK] DnsQuery_A(%s, type=%d) called, dnsMode=%s", pszName, (int)wType, g_Config.DnsMode.c_str());
+    //NetLog("[DNS-HOOK] DnsQuery_A(%s, type=%d) called, dnsMode=%s", pszName, (int)wType, g_Config.DnsMode.c_str());
 
     if (inet_addr(pszName) != INADDR_NONE) {
         return real_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);

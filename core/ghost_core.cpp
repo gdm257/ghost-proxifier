@@ -7,12 +7,9 @@
 // ============================================================================
 extern void LoadConfigFromEnv();
 extern void InitSharedDnsCache();
-extern void InitUdpSocket();
-extern void StartStats();
 extern void EnvInjectFromConfig();
 extern void InstallSocketHooks();
 extern void InstallDnsHooks();
-extern void InstallProcessHooks();
 extern void NetLog(const char* format, ...);
 
 // ============================================================================
@@ -37,9 +34,6 @@ GetAddrInfoExW_t          real_GetAddrInfoExW = NULL;
 DnsQuery_W_t              real_DnsQuery_W = NULL;
 DnsQuery_A_t              real_DnsQuery_A = NULL;
 DnsFree_t                 real_DnsFree = NULL;
-WSAGetOverlappedResult_t  real_WSAGetOverlappedResult = NULL;
-GetQueuedCompletionStatus_t   real_GetQueuedCompletionStatus = NULL;
-GetQueuedCompletionStatusEx_t real_GetQueuedCompletionStatusEx = NULL;
 CreateProcessW_t          real_CreateProcessW = NULL;
 CreateProcessA_t          real_CreateProcessA = NULL;
 CreateProcessAsUserW_t    real_CreateProcessAsUserW = NULL;
@@ -53,15 +47,13 @@ WSAIoctl_t                real_WSAIoctl = NULL;
 void SetupThreadInternal() {
     LoadConfigFromEnv();
     MH_Initialize();
-    HMODULE h = GetModuleHandleA("ws2_32.dll");
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
-    HMODULE hKBase = GetModuleHandleA("kernelbase.dll");
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
 
-    // Function Pointers
-    real_CreateProcessW = (CreateProcessW_t)GetProcAddress(hK32, "CreateProcessW");
-    real_CreateProcessA = (CreateProcessA_t)GetProcAddress(hK32, "CreateProcessA");
-    real_NtCreateUserProcess = (NtCreateUserProcess_t)GetProcAddress(hNtdll, "NtCreateUserProcess");
+    // Start UDP log pipeline
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    InitLogging();
+
+    HMODULE h = GetModuleHandleA("ws2_32.dll");
 
     // Network hooks
     real_send = (send_t)GetProcAddress(h, "send");
@@ -78,7 +70,6 @@ void SetupThreadInternal() {
     real_GetAddrInfoW = (GetAddrInfoW_t)GetProcAddress(h, "GetAddrInfoW");
     real_gethostbyname = (gethostbyname_t)GetProcAddress(h, "gethostbyname");
     real_WSASend = (WSASend_t)GetProcAddress(h, "WSASend");
-    real_WSAGetOverlappedResult = (WSAGetOverlappedResult_t)GetProcAddress(h, "WSAGetOverlappedResult");
     real_WSAIoctl = (WSAIoctl_t)GetProcAddress(h, "WSAIoctl");
     real_GetAddrInfoExW = (GetAddrInfoExW_t)GetProcAddress(h, "GetAddrInfoExW");
 
@@ -94,36 +85,14 @@ void SetupThreadInternal() {
     InstallSocketHooks();
     InstallDnsHooks();
 
-    // GetQueuedCompletionStatus hooks (kernel32)
-    if (hK32) {
-        real_GetQueuedCompletionStatus = (GetQueuedCompletionStatus_t)GetProcAddress(hK32, "GetQueuedCompletionStatus");
-        if (real_GetQueuedCompletionStatus) MH_CreateHook((void*)real_GetQueuedCompletionStatus, (void*)hook_GetQueuedCompletionStatus, (void**)&real_GetQueuedCompletionStatus);
-        real_GetQueuedCompletionStatusEx = (GetQueuedCompletionStatusEx_t)GetProcAddress(hK32, "GetQueuedCompletionStatusEx");
-        if (real_GetQueuedCompletionStatusEx) MH_CreateHook((void*)real_GetQueuedCompletionStatusEx, (void*)hook_GetQueuedCompletionStatusEx, (void**)&real_GetQueuedCompletionStatusEx);
-    }
-
-    // Process hooks
-    InstallProcessHooks();
-
-    StartStats();
     InitSharedDnsCache();
-    InitUdpSocket();
     MH_EnableHook(MH_ALL_HOOKS);
     g_Initialized = true;
 
     // Export config to env vars so child processes inherit proxy settings.
     EnvInjectFromConfig();
 
-    NetLog("[Init] stable core initialized (EntryDetour mode).");
-
-    // Signal that hooks are ready
-    wchar_t eventName[64];
-    swprintf_s(eventName, L"Global\\GhostCoreReady_%u", (unsigned int)GetCurrentProcessId());
-    HANDLE hEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
-    if (hEvent) {
-        SetEvent(hEvent);
-        CloseHandle(hEvent);
-    }
+    NetLog("[Init] stable core initialized.");
 }
 
 // ============================================================================
@@ -143,18 +112,45 @@ extern "C" __declspec(dllexport) void WINAPI GhostInit() {
 
     GetEnvironmentVariableA("GHOST_GUID", g_CurrentGuid, sizeof(g_CurrentGuid));
     g_InjectTime = time(nullptr);
-    SetupThreadInternal();  // MH_EnableHook runs here
+    g_InjectTick = GetTickCount();
+
+    // Wrap initialisation in SEH to prevent crashes (e.g. in sandboxed
+    // Chrome renderer processes) from killing the host.  Matches the
+    // original SetupThread pattern from the initial commit.
+    __try {
+        SetupThreadInternal();
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Silently absorb crashes — the host process must survive.
+        NetLog("[Init] suppressed crash during SetupThreadInternal");
+    }
 }
 
 // ============================================================================
 // DllMain: entry point for DLL injection
 // ============================================================================
+// IMPORTANT: DllMain must return quickly — synchronous heavy initialization
+// (socket creation, shared memory, MinHook) runs under the loader lock and
+// will deadlock or fail in sandboxed processes (Chrome renderers, AppContainer).
+// The original ghost_core.cpp spawned a thread; the shellcode calls GhostInit
+// for EntryDetour.  We keep both paths: a worker thread for CreateRemoteThread,
+// and the exported GhostInit (called by shellcode) runs in the first thread
+// for Cygwin compatibility.
+HMODULE g_hDllModule = NULL;
+
+static DWORD WINAPI GhostInitThread(LPVOID) {
+    GhostInit();
+    return 0;
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
+        g_hDllModule = hModule;
         DisableThreadLibraryCalls(hModule);
-        // For EntryDetour (SetThreadContext): GhostInit runs here in the first
-        // thread, then the shellcode calls it again (no-op, g_Initialized=true).
-        // For CreateRemoteThread fallback: GhostInit only runs here.
+        // Spawn worker thread — matches original SetupThread pattern.
+        // For EntryDetour: the shellcode will also call GhostInit on the first
+        // thread (Cygwin cygtls); the g_Initialized guard makes the second call
+        // a no-op.  The worker-thread push here ensures CreateRemoteThread
+        // injection also triggers full init.
         GhostInit();
     }
     return TRUE;

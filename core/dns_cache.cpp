@@ -95,13 +95,13 @@ bool SharedDnsCacheLookup(const char* domain, std::vector<DWORD>& results) {
             }
             g_pSharedCache[i].access_tick = now;
             ReleaseMutex(g_hSharedCacheMutex);
-            NetLog("[DNS-Cache-SHARED] HIT: %s (%d IPs)", domain, (int)results.size());
+            NetLog("[DNS-Cache] HIT: %s (%d IPs)", domain, (int)results.size());
             return true;
         }
     }
 
     ReleaseMutex(g_hSharedCacheMutex);
-    NetLog("[DNS-Cache-SHARED] MISS: %s", domain);
+    NetLog("[DNS-Cache] MISS: %s", domain);
     return false;
 }
 
@@ -165,5 +165,5 @@ void SharedDnsCacheInsert(const char* domain, const std::vector<DWORD>& ips) {
     g_pSharedCache[slot].access_tick = now;
 
     ReleaseMutex(g_hSharedCacheMutex);
-    NetLog("[DNS-Cache-SHARED] INSERT: %s (%d IPs)", domain, (int)ips.size());
+    NetLog("[DNS-Cache] INSERT: %s (%d IPs)", domain, (int)ips.size());
 }

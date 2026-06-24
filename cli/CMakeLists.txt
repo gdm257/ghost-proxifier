@@ -8,7 +8,6 @@ set(CLI_SOURCES
     commands_dns.cpp
     commands_monitor.cpp
     process_tree.cpp
-    udp_client.cpp
     utils.cpp
 )
 

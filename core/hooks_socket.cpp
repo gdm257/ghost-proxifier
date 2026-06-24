@@ -46,7 +46,7 @@ BOOL PASCAL hook_ConnectEx(SOCKET s, const struct sockaddr* name, int namelen,
             nodeName = g_Config.NodeName;
         }
         if (!is_local && port != proxyPort && nodeName != "Direct") {
-            NetLog("[hook] ConnectEx: %s:%d | %s", ip, port, domain.c_str());
+            NetLog("[Proxy] ConnectEx: %s:%d | %s", ip, port, domain.c_str());
             // Save target info + initial data for deferred handshake
             PendingProxy pp = { ip, port, name->sa_family, domain, {} };
             if (lpSendBuffer && dwSendDataLength > 0) {
@@ -162,7 +162,7 @@ int WINAPI hook_WSAConnect(SOCKET s, const sockaddr* name, int namelen,
                 return real_WSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
             }
 
-            NetLog("[hook] WSAConnect: %s:%d (Family: %d) | %s", ip, port, name->sa_family, domain.c_str());
+            NetLog("[Proxy] WSAConnect: %s:%d (Family: %d) | %s", ip, port, name->sa_family, domain.c_str());
             // Save target info for deferred HTTP CONNECT handshake
             {
                 std::lock_guard<std::mutex> lock(g_PendingMutex);
@@ -253,6 +253,12 @@ int WINAPI hook_connect(SOCKET s, const sockaddr* name, int namelen) {
                 l.sin_port = htons(dnsProxyPort);
                 return real_connect(s, (sockaddr*)&l, sizeof(l));
             }
+            // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
+            if (type == SOCK_DGRAM && port == 443) {
+                NetLog("[QUIC] Blocking UDP 443 to %s:%d to force TCP fallback", ip, port);
+                WSASetLastError(WSAECONNREFUSED);
+                return SOCKET_ERROR;
+            }
             if (t->sin_addr.s_addr == inet_addr("127.0.0.1"))
                 is_local = true;
         }
@@ -276,7 +282,7 @@ int WINAPI hook_connect(SOCKET s, const sockaddr* name, int namelen) {
             return SOCKET_ERROR;
         }
         if (!is_local && port != proxyPort && nodeName != "Direct") {
-            NetLog("[hook] connect: %s:%d (Family: %d) | %s", ip, port, name->sa_family, domain.c_str());
+            NetLog("[Proxy] connect: %s:%d (Family: %d) | %s", ip, port, name->sa_family, domain.c_str());
             // Save target info for deferred HTTP CONNECT handshake
             {
                 std::lock_guard<std::mutex> lock(g_PendingMutex);
@@ -339,10 +345,6 @@ int WINAPI hook_send(SOCKET s, const char* buf, int len, int flags) {
         return SOCKET_ERROR;
     }
     int ret = real_send(s, buf, len, flags);
-    if (ret > 0) {
-        std::lock_guard<std::mutex> lock(g_ConfigMutex);
-        if (g_Config.NodeName != "Direct") g_sentBytes += ret;
-    }
     return ret;
 }
 
@@ -355,17 +357,7 @@ int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
-    int ret = real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
-    if (ret == 0) {
-        if (lpNumberOfBytesSent) {
-            std::lock_guard<std::mutex> lock(g_ConfigMutex);
-            if (g_Config.NodeName != "Direct") g_sentBytes += *lpNumberOfBytesSent;
-        }
-    }
-    else if (WSAGetLastError() == WSA_IO_PENDING && lpOverlapped) {
-        RegisterOverlapped(lpOverlapped, OP_SEND);
-    }
-    return ret;
+    return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
 }
 
 int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
@@ -375,10 +367,6 @@ int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
         return SOCKET_ERROR;
     }
     int ret = real_recv(s, buf, len, flags);
-    if (ret > 0) {
-        std::lock_guard<std::mutex> lock(g_ConfigMutex);
-        if (g_Config.NodeName != "Direct") g_recvBytes += ret;
-    }
     return ret;
 }
 
@@ -388,17 +376,7 @@ int WINAPI hook_WSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWO
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
-    int ret = real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
-    if (ret == 0) {
-        if (lpNumberOfBytesRecvd) {
-            std::lock_guard<std::mutex> lock(g_ConfigMutex);
-            if (g_Config.NodeName != "Direct") g_recvBytes += *lpNumberOfBytesRecvd;
-        }
-    }
-    else if (WSAGetLastError() == WSA_IO_PENDING && lpOverlapped) {
-        RegisterOverlapped(lpOverlapped, OP_RECV);
-    }
-    return ret;
+    return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
 }
 
 int WINAPI hook_sendto(SOCKET s, const char* buf, int len, int flags,
@@ -416,6 +394,13 @@ int WINAPI hook_sendto(SOCKET s, const char* buf, int len, int flags,
         int target_port = 0;
         if (to->sa_family == AF_INET) target_port = ntohs(((sockaddr_in*)to)->sin_port);
         else target_port = ntohs(((sockaddr_in6*)to)->sin6_port);
+
+        // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
+        if (target_port == 443) {
+            NetLog("[QUIC] hook_sendto: Blocking UDP 443 to force TCP fallback");
+            WSASetLastError(WSAECONNREFUSED);
+            return SOCKET_ERROR;
+        }
 
         if (target_port == 53) {
             sockaddr_storage l;
@@ -458,14 +443,25 @@ int WINAPI hook_WSASendTo(
         dnsProxyPort = g_Config.DnsProxyPort;
         dnsMode = g_Config.DnsMode;
     }
-    if (lpTo && lpTo->sa_family == AF_INET && dnsProxyPort > 0 && ntohs(((sockaddr_in*)lpTo)->sin_port) == 53 && dnsMode == "dot") {
-        sockaddr_in l = *(sockaddr_in*)lpTo;
-        l.sin_addr.s_addr = inet_addr("127.0.0.1");
-        l.sin_port = htons(dnsProxyPort);
-        NetLog("[DNS] hook_WSASendTo: Translated to 127.0.0.1:%d", dnsProxyPort);
-        return real_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent,
-            dwFlags, (sockaddr*)&l, sizeof(l), lpOverlapped,
-            lpCompletionRoutine);
+    if (lpTo && lpTo->sa_family == AF_INET && dnsProxyPort > 0 && dnsMode == "dot") {
+        int target_port = ntohs(((sockaddr_in*)lpTo)->sin_port);
+
+        // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
+        if (target_port == 443) {
+            NetLog("[QUIC] hook_WSASendTo: Blocking UDP 443 to force TCP fallback");
+            WSASetLastError(WSAECONNREFUSED);
+            return SOCKET_ERROR;
+        }
+
+        if (target_port == 53) {
+            sockaddr_in l = *(sockaddr_in*)lpTo;
+            l.sin_addr.s_addr = inet_addr("127.0.0.1");
+            l.sin_port = htons(dnsProxyPort);
+            NetLog("[DNS] hook_WSASendTo: Translated to 127.0.0.1:%d", dnsProxyPort);
+            return real_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent,
+                dwFlags, (sockaddr*)&l, sizeof(l), lpOverlapped,
+                lpCompletionRoutine);
+        }
     }
     return real_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent,
         dwFlags, lpTo, iTolen, lpOverlapped,
@@ -607,69 +603,6 @@ int WINAPI hook_WSARecvFrom(
     return ret;
 }
 
-BOOL WINAPI hook_WSAGetOverlappedResult(SOCKET s, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags) {
-    if (!g_Initialized) return real_WSAGetOverlappedResult(s, lpOverlapped, lpcbTransfer, fWait, lpdwFlags);
-    BOOL ret = real_WSAGetOverlappedResult(s, lpOverlapped, lpcbTransfer, fWait, lpdwFlags);
-    if (ret && lpOverlapped && lpcbTransfer && *lpcbTransfer > 0) {
-        int idx = GetBucketIndex(lpOverlapped);
-        std::lock_guard<std::mutex> lock(g_OverlappedMutexes[idx]);
-        auto it = g_PendingOverlappedBuckets[idx].find(lpOverlapped);
-        if (it != g_PendingOverlappedBuckets[idx].end()) {
-            std::lock_guard<std::mutex> lockCfg(g_ConfigMutex);
-            if (g_Config.NodeName != "Direct") {
-                if (it->second == OP_SEND) g_sentBytes += *lpcbTransfer;
-                else g_recvBytes += *lpcbTransfer;
-            }
-            g_PendingOverlappedBuckets[idx].erase(it);
-        }
-    }
-    return ret;
-}
-
-BOOL WINAPI hook_GetQueuedCompletionStatus(HANDLE CompletionPort, LPDWORD lpNumberOfBytesTransferred, PULONG_PTR lpCompletionKey, LPOVERLAPPED* lpOverlapped, DWORD dwMilliseconds) {
-    if (!g_Initialized) return real_GetQueuedCompletionStatus(CompletionPort, lpNumberOfBytesTransferred, lpCompletionKey, lpOverlapped, dwMilliseconds);
-    BOOL ret = real_GetQueuedCompletionStatus(CompletionPort, lpNumberOfBytesTransferred, lpCompletionKey, lpOverlapped, dwMilliseconds);
-    if (ret && lpOverlapped && *lpOverlapped && lpNumberOfBytesTransferred && *lpNumberOfBytesTransferred > 0) {
-        int idx = GetBucketIndex((LPWSAOVERLAPPED)*lpOverlapped);
-        std::lock_guard<std::mutex> lock(g_OverlappedMutexes[idx]);
-        auto it = g_PendingOverlappedBuckets[idx].find((LPWSAOVERLAPPED)*lpOverlapped);
-        if (it != g_PendingOverlappedBuckets[idx].end()) {
-            std::lock_guard<std::mutex> lockCfg(g_ConfigMutex);
-            if (g_Config.NodeName != "Direct") {
-                if (it->second == OP_SEND) g_sentBytes += *lpNumberOfBytesTransferred;
-                else g_recvBytes += *lpNumberOfBytesTransferred;
-            }
-            g_PendingOverlappedBuckets[idx].erase(it);
-        }
-    }
-    return ret;
-}
-
-BOOL WINAPI hook_GetQueuedCompletionStatusEx(HANDLE CompletionPort, LPOVERLAPPED_ENTRY lpCompletionPortEntries, ULONG ulCount, PULONG ulNumEntriesRemoved, DWORD dwMilliseconds, BOOL fAlertable) {
-    if (!g_Initialized) return real_GetQueuedCompletionStatusEx(CompletionPort, lpCompletionPortEntries, ulCount, ulNumEntriesRemoved, dwMilliseconds, fAlertable);
-    BOOL ret = real_GetQueuedCompletionStatusEx(CompletionPort, lpCompletionPortEntries, ulCount, ulNumEntriesRemoved, dwMilliseconds, fAlertable);
-    if (ret && lpCompletionPortEntries && ulNumEntriesRemoved && *ulNumEntriesRemoved > 0) {
-        for (ULONG i = 0; i < *ulNumEntriesRemoved; i++) {
-            LPOVERLAPPED ov = lpCompletionPortEntries[i].lpOverlapped;
-            DWORD bytes = lpCompletionPortEntries[i].dwNumberOfBytesTransferred;
-            if (ov && bytes > 0) {
-                int idx = GetBucketIndex((LPWSAOVERLAPPED)ov);
-                std::lock_guard<std::mutex> lock(g_OverlappedMutexes[idx]);
-                auto it = g_PendingOverlappedBuckets[idx].find((LPWSAOVERLAPPED)ov);
-                if (it != g_PendingOverlappedBuckets[idx].end()) {
-                    std::lock_guard<std::mutex> lockCfg(g_ConfigMutex);
-                    if (g_Config.NodeName != "Direct") {
-                        if (it->second == OP_SEND) g_sentBytes += bytes;
-                        else g_recvBytes += bytes;
-                    }
-                    g_PendingOverlappedBuckets[idx].erase(it);
-                }
-            }
-        }
-    }
-    return ret;
-}
-
 int WINAPI hook_closesocket(SOCKET s) {
     if (!g_Initialized) return real_closesocket ? real_closesocket(s) : 0;
     {
@@ -722,9 +655,6 @@ void InstallSocketHooks() {
 
     // close hook
     if (real_closesocket) MH_CreateHook((void*)real_closesocket, (void*)hook_closesocket, (void**)&real_closesocket);
-
-    // overlapped I/O hooks
-    if (real_WSAGetOverlappedResult) MH_CreateHook((void*)real_WSAGetOverlappedResult, (void*)hook_WSAGetOverlappedResult, (void**)&real_WSAGetOverlappedResult);
 
     // WSAIoctl (for lazy ConnectEx hook)
     if (real_WSAIoctl) MH_CreateHook((void*)real_WSAIoctl, (void*)hook_WSAIoctl, (void**)&real_WSAIoctl);

@@ -68,24 +68,52 @@ static bool RunLauncherInjector(DWORD pid, const wchar_t* dllPath, bool targetIs
     return exitCode == 0;
 }
 
+static void EnableDebugPrivilege() {
+    HANDLE hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return;
+
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+    if (LookupPrivilegeValueW(NULL, L"SeDebugPrivilege", &luid)) {
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Luid = luid;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    }
+    CloseHandle(hToken);
+}
+
 static bool DirectInjectDllW(DWORD pid, const wchar_t* dllPath) {
-    HANDLE h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    EnableDebugPrivilege();
+    HANDLE h = OpenProcess(
+        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+        FALSE, pid);
     if (!h) return false;
 
-    void* loadLibraryAddr = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryW");
+    void* loadLibraryAddr = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
     if (!loadLibraryAddr) {
         CloseHandle(h);
         return false;
     }
 
-    size_t pathLen = (wcslen(dllPath) + 1) * sizeof(wchar_t);
-    void* m = VirtualAllocEx(h, NULL, pathLen, MEM_COMMIT, PAGE_READWRITE);
+    // Convert wide path to ANSI for LoadLibraryA
+    int pathLenA = WideCharToMultiByte(CP_ACP, 0, dllPath, -1, NULL, 0, NULL, NULL);
+    if (pathLenA <= 0) {
+        CloseHandle(h);
+        return false;
+    }
+    std::string pathA(pathLenA, '\0');
+    WideCharToMultiByte(CP_ACP, 0, dllPath, -1, &pathA[0], pathLenA, NULL, NULL);
+
+    void* m = VirtualAllocEx(h, NULL, pathLenA, MEM_COMMIT, PAGE_READWRITE);
     if (!m) {
         CloseHandle(h);
         return false;
     }
 
-    if (!WriteProcessMemory(h, m, (void*)dllPath, pathLen, NULL)) {
+    if (!WriteProcessMemory(h, m, pathA.c_str(), pathLenA, NULL)) {
         VirtualFreeEx(h, m, 0, MEM_RELEASE);
         CloseHandle(h);
         return false;

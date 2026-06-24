@@ -58,15 +58,6 @@ std::vector<ProcessInfo> EnumerateProcesses() {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return result;
 
-    // Load UDP stats for merging (non-blocking, uses last known data)
-    json udpStats = GetUdpStats();
-    std::map<DWORD, json> statMap;
-    if (udpStats.is_array()) {
-        for (auto& s : udpStats) {
-            if (s.contains("pid")) statMap[static_cast<DWORD>(s["pid"])] = s;
-        }
-    }
-
     PROCESSENTRY32W pe = { sizeof(pe) };
     if (Process32FirstW(snap, &pe)) {
         do {
@@ -87,20 +78,6 @@ std::vector<ProcessInfo> EnumerateProcesses() {
                     info.injected = IsProcessInjected(pe.th32ProcessID);
                     CloseHandle(h);
                 }
-            }
-
-            // Merge UDP stats
-            auto it = statMap.find(pe.th32ProcessID);
-            if (it != statMap.end()) {
-                const json& s = it->second;
-                info.up = s.value("up", 0ULL);
-                info.down = s.value("down", 0ULL);
-                info.conns = s.value("conns", 0);
-                info.latency = s.value("latency", -1);
-                if (s.contains("node") && s["node"].is_string())
-                    info.node = s["node"].get<std::string>();
-                if (s.contains("dns") && s["dns"].is_string())
-                    info.dns = s["dns"].get<std::string>();
             }
 
             result.push_back(info);

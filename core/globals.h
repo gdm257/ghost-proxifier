@@ -15,11 +15,8 @@
 #include <atomic>
 #include <algorithm>
 #include <ctime>
-#include <psapi.h>
 
-#pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "dnsapi.lib")
 #include <windns.h>
 #include "MinHook.h"
 
@@ -44,9 +41,6 @@ typedef int(WINAPI* closesocket_t)(SOCKET s);
 typedef INT(WSAAPI* getaddrinfo_t)(PCSTR, PCSTR, const ADDRINFOA*, PADDRINFOA*);
 typedef INT(WSAAPI* GetAddrInfoW_t)(PCWSTR, PCWSTR, const ADDRINFOW*, PADDRINFOW*);
 typedef struct hostent* (WSAAPI* gethostbyname_t)(const char*);
-typedef BOOL(WINAPI* WSAGetOverlappedResult_t)(SOCKET s, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
-typedef BOOL(WINAPI* GetQueuedCompletionStatus_t)(HANDLE CompletionPort, LPDWORD lpNumberOfBytesTransferred, PULONG_PTR lpCompletionKey, LPOVERLAPPED* lpOverlapped, DWORD dwMilliseconds);
-typedef BOOL(WINAPI* GetQueuedCompletionStatusEx_t)(HANDLE CompletionPort, LPOVERLAPPED_ENTRY lpCompletionPortEntries, ULONG ulCount, PULONG ulNumEntriesRemoved, DWORD dwMilliseconds, BOOL fAlertable);
 typedef BOOL(WINAPI* CreateProcessW_t)(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
 typedef BOOL(WINAPI* CreateProcessA_t)(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
 typedef BOOL(WINAPI* CreateProcessAsUserW_t)(HANDLE hToken, LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
@@ -92,9 +86,6 @@ extern GetAddrInfoExW_t          real_GetAddrInfoExW;
 extern DnsQuery_W_t              real_DnsQuery_W;
 extern DnsQuery_A_t              real_DnsQuery_A;
 extern DnsFree_t                 real_DnsFree;
-extern WSAGetOverlappedResult_t  real_WSAGetOverlappedResult;
-extern GetQueuedCompletionStatus_t   real_GetQueuedCompletionStatus;
-extern GetQueuedCompletionStatusEx_t real_GetQueuedCompletionStatusEx;
 extern CreateProcessW_t          real_CreateProcessW;
 extern CreateProcessA_t          real_CreateProcessA;
 extern CreateProcessAsUserW_t    real_CreateProcessAsUserW;
@@ -105,11 +96,11 @@ extern WSAIoctl_t                real_WSAIoctl;
 // --- Global state ---
 extern SOCKET g_DnsProxyUdpSocket;
 
-extern std::atomic<uint64_t> g_sentBytes;
-extern std::atomic<uint64_t> g_recvBytes;
-extern std::atomic<int> g_lastLatency;
-extern SOCKET g_CommonUdpSocket;
-extern std::mutex g_UdpMutex;
+// --- UDP Log Pipeline ---
+extern SOCKET g_LogSocket;
+extern DWORD  g_InjectTick;
+extern int    g_LogPort;
+
 extern std::unordered_map<DWORD, std::string> g_IpToDomainMap;
 extern std::mutex g_IpMapMutex;
 
@@ -128,15 +119,11 @@ extern GlobalConfig g_Config;
 extern std::mutex g_ConfigMutex;
 extern char g_CurrentGuid[64];
 extern time_t g_InjectTime;
+extern HMODULE g_hDllModule;
 extern std::atomic<bool> g_Initialized;
 extern std::atomic<bool> g_ProxyEngineInitialized;
 extern std::mutex g_EngineInitMutex;
 extern std::atomic<int> g_DnsProxyPort;
-
-enum OverlappedOp { OP_SEND, OP_RECV };
-#define OVERLAPPED_BUCKETS 64
-extern std::unordered_map<LPWSAOVERLAPPED, OverlappedOp> g_PendingOverlappedBuckets[OVERLAPPED_BUCKETS];
-extern std::mutex g_OverlappedMutexes[OVERLAPPED_BUCKETS];
 
 // --- Pending Proxy (Lazy Handshake) ---
 struct PendingProxy {
@@ -209,13 +196,11 @@ extern std::mutex g_DnsPoolMutex;
 // ============================================================================
 
 // utils.cpp
-int GetBucketIndex(LPWSAOVERLAPPED ov);
-void RegisterOverlapped(LPWSAOVERLAPPED ov, OverlappedOp op);
 void RecordIpDomainMapping(DWORD net_ip, const std::string& domain);
 bool GetDomainByRealIp(DWORD net_ip, std::string& domain);
 void NetLog(const char* format, ...);
+void InitLogging();
 DWORD GetParentProcessId();
-void InitUdpSocket();
 bool SyncSend(SOCKET s, const char* buf, int len);
 bool SyncRecvResponse(SOCKET s, std::string& resp);
 bool IsKnownDoHServer(const char* ip, int port);
@@ -227,8 +212,6 @@ void PerformLazyInitializationInternal();
 DWORD WINAPI DelayedInitThread(LPVOID);
 void LoadConfigFromEnv();
 void EnvInjectFromConfig();
-void StartStats();
-void NetConfigHandshake();
 
 // proxy.cpp
 bool CompletePendingHandshake(SOCKET s);
@@ -252,24 +235,17 @@ SOCKET CreateDnsConn();
 SOCKET AcquireDnsConn();
 void ReleaseDnsConn(SOCKET s);
 
-// stats.cpp
-DWORD WINAPI StatsThread(LPVOID);
-
 // injector.cpp
 bool SetThreadContextInject(HANDLE hProcess, HANDLE hThread,
                             const std::wstring& fullDllPath,
                             bool isX86, HANDLE hEvent);
 bool InjectDllW(HANDLE hProcess);
-bool InjectIntoChild(HANDLE hProcess, HANDLE hThread, HANDLE hEvent);
 
 // hooks_socket.cpp
 void InstallSocketHooks();
 
 // hooks_dns.cpp
 void InstallDnsHooks();
-
-// hooks_process.cpp
-void InstallProcessHooks();
 
 // --- External hook functions (referenced by Install*Hooks and WSAIoctl) ---
 
@@ -308,14 +284,6 @@ int WINAPI hook_WSAIoctl(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInBuffer,
     DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer,
     LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
-BOOL WINAPI hook_WSAGetOverlappedResult(SOCKET s, LPWSAOVERLAPPED lpOverlapped,
-    LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
-BOOL WINAPI hook_GetQueuedCompletionStatus(HANDLE CompletionPort,
-    LPDWORD lpNumberOfBytesTransferred, PULONG_PTR lpCompletionKey,
-    LPOVERLAPPED* lpOverlapped, DWORD dwMilliseconds);
-BOOL WINAPI hook_GetQueuedCompletionStatusEx(HANDLE CompletionPort,
-    LPOVERLAPPED_ENTRY lpCompletionPortEntries, ULONG ulCount,
-    PULONG ulNumEntriesRemoved, DWORD dwMilliseconds, BOOL fAlertable);
 
 // hooks_dns.cpp
 INT WSAAPI hook_getaddrinfo(PCSTR pNodeName, PCSTR pServiceName,
@@ -332,14 +300,3 @@ DNS_STATUS WINAPI hook_DnsQuery_W(PCWSTR pszName, WORD wType, DWORD Options,
 DNS_STATUS WINAPI hook_DnsQuery_A(PCSTR pszName, WORD wType, DWORD Options,
     PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
 
-// hooks_process.cpp
-BOOL WINAPI hook_CreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine,
-    LPSECURITY_ATTRIBUTES lpProcessAttributes,
-    LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles,
-    DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory,
-    LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
-BOOL WINAPI hook_CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine,
-    LPSECURITY_ATTRIBUTES lpProcessAttributes,
-    LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles,
-    DWORD dwCreationFlags, LPVOID lpEnvironment, LPCSTR lpCurrentDirectory,
-    LPSTARTUPINFOA lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);

@@ -103,10 +103,7 @@ bool CompletePendingHandshake(SOCKET s) {
 
     // Send any initial data from ConnectEx
     if (ok && !pp.initial_data.empty()) {
-        if (SyncSend(s, pp.initial_data.data(), (int)pp.initial_data.size())) {
-            g_sentBytes += pp.initial_data.size();
-        }
-        else {
+        if (!SyncSend(s, pp.initial_data.data(), (int)pp.initial_data.size())) {
             ok = false;
         }
     }

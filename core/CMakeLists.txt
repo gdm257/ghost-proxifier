@@ -6,14 +6,12 @@ set(CORE_SOURCES
     shellcode.cpp
     hooks_socket.cpp
     hooks_dns.cpp
-    hooks_process.cpp
     injector.cpp
     proxy.cpp
     dns.cpp
     dns_cache.cpp
     dns_pool.cpp
     config.cpp
-    stats.cpp
     utils.cpp
 )
 
@@ -22,7 +20,7 @@ add_library(ghost_injector STATIC ghost_injector.cpp)
 add_executable(ghost_launcher ghost_launcher.cpp)
 add_executable(ghost_dns_dump ghost_dns_dump.cpp)
 
-target_link_libraries(ghost_core minhook ws2_32 dnsapi psapi)
+target_link_libraries(ghost_core minhook ws2_32)
 target_link_libraries(ghost_injector ws2_32 psapi shell32)
 target_link_libraries(ghost_dns_dump ws2_32)
 

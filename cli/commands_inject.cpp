@@ -1,11 +1,20 @@
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <stdio.h>
 #include <algorithm>
+#include <fstream>
+#include <string>
+#include <vector>
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <shellapi.h>
 #include "utils.h"
 
+#pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "shell32.lib")
 
 // Get the directory where this exe lives
 static std::wstring GetExeDir() {
@@ -78,7 +87,158 @@ static bool ResolvePids(const wchar_t* arg, std::vector<DWORD>& outPids) {
     return false;
 }
 
-// Inject DLL into a single process using ghost_launcher.exe
+// Enable SeDebugPrivilege to bypass DACL deny entries on protected processes.
+// No-op if not running as admin.
+static void EnableDebugPrivilege() {
+    HANDLE hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return;
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+    if (LookupPrivilegeValueW(NULL, L"SeDebugPrivilege", &luid)) {
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Luid = luid;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    }
+    CloseHandle(hToken);
+}
+
+// Write ghost_config.ini next to the DLL so the injected DLL can read its
+// config without relying on environment variables (which belong to the host
+// process, not the target).  Matches the original ghost.conf approach.
+static void WriteConfigForDll(const std::wstring& dllPath) {
+    // Build config file path: <dllDir>\ghost_config.ini
+    std::wstring cfgPath = dllPath;
+    size_t slash = cfgPath.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) cfgPath = cfgPath.substr(0, slash + 1);
+    else cfgPath = L"";
+    cfgPath += L"ghost_config.ini";
+
+    std::ofstream f(cfgPath);
+    if (!f.is_open()) return;
+
+    char buf[256];
+    if (GetEnvironmentVariableA("GHOST_PROXY", buf, sizeof(buf)))
+        f << "proxy=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_PROXY_PORT", buf, sizeof(buf)))
+        f << "port=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_DNS", buf, sizeof(buf)))
+        f << "dns=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_DNS_PORT", buf, sizeof(buf)))
+        f << "dns_port=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_DNS_MODE", buf, sizeof(buf)))
+        f << "dns_mode=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_NODE", buf, sizeof(buf)))
+        f << "node=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_SYNC", buf, sizeof(buf)))
+        f << "sync=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_LOG_PORT", buf, sizeof(buf)))
+        f << "log_port=" << buf << "\n";
+}
+
+// Direct injection — matches the original ghost_injector.cpp approach.
+// Opens the target with PROCESS_ALL_ACCESS, writes DLL path, creates remote thread.
+// Returns 0 on success, or error code (same codes as ghost_launcher.exe).
+static DWORD DirectInject(DWORD pid, const std::wstring& dllPath) {
+    EnableDebugPrivilege();
+
+    HANDLE h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    if (!h) return 2;
+
+    void* loadLibraryAddr = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
+    if (!loadLibraryAddr) {
+        CloseHandle(h);
+        return 3;
+    }
+
+    // Convert wide path to ANSI for LoadLibraryA
+    int pathLenA = WideCharToMultiByte(CP_ACP, 0, dllPath.c_str(), -1, NULL, 0, NULL, NULL);
+    if (pathLenA <= 0) {
+        CloseHandle(h);
+        return 3;
+    }
+    std::string pathA(pathLenA, '\0');
+    WideCharToMultiByte(CP_ACP, 0, dllPath.c_str(), -1, &pathA[0], pathLenA, NULL, NULL);
+
+    void* m = VirtualAllocEx(h, NULL, pathLenA, MEM_COMMIT, PAGE_READWRITE);
+    if (!m) {
+        CloseHandle(h);
+        return 4;
+    }
+
+    if (!WriteProcessMemory(h, m, pathA.c_str(), pathLenA, NULL)) {
+        VirtualFreeEx(h, m, 0, MEM_RELEASE);
+        CloseHandle(h);
+        return 5;
+    }
+
+    HANDLE t = CreateRemoteThread(h, NULL, 0, (LPTHREAD_START_ROUTINE)loadLibraryAddr, m, 0, NULL);
+    if (t) {
+        DWORD waitResult = WaitForSingleObject(t, 10000);
+        DWORD loadResult = 0;
+        bool ok = waitResult == WAIT_OBJECT_0 &&
+                  GetExitCodeThread(t, &loadResult) &&
+                  loadResult != 0;
+        CloseHandle(t);
+        VirtualFreeEx(h, m, 0, MEM_RELEASE);
+        CloseHandle(h);
+        return ok ? 0 : 8;
+    }
+
+    VirtualFreeEx(h, m, 0, MEM_RELEASE);
+    CloseHandle(h);
+    return 6;
+}
+
+// Fallback: try injecting via ghost_launcher.exe (for cross-arch scenarios
+// like x64 CLI injecting into x86 process, or when direct injection fails).
+static bool TryLauncherInject(DWORD pid, const std::wstring& launcherPath,
+                               const std::wstring& dllPath, bool elevated) {
+    std::wstring params = std::to_wstring(pid) + L" \"" + dllPath + L"\"";
+
+    if (elevated) {
+        SHELLEXECUTEINFOW sei = { sizeof(sei) };
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        sei.lpVerb = L"runas";
+        sei.lpFile = launcherPath.c_str();
+        sei.lpParameters = params.c_str();
+        sei.nShow = SW_HIDE;
+
+        if (!ShellExecuteExW(&sei)) return false;
+        if (!sei.hProcess) return false;
+
+        WaitForSingleObject(sei.hProcess, 15000);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(sei.hProcess, &exitCode);
+        CloseHandle(sei.hProcess);
+        return exitCode == 0;
+    }
+
+    std::wstring cmd = L"\"" + launcherPath + L"\" " + params;
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(0);
+
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+        return false;
+
+    WaitForSingleObject(pi.hProcess, 15000);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return exitCode == 0;
+}
+
+// Inject DLL into a single process.
+// Tries direct injection first (matching the original ghost_injector approach),
+// then falls back to launcher for cross-arch or protected processes.
 static bool InjectOne(DWORD pid) {
     std::wstring exeDir = GetExeDir();
     bool target64 = IsProcess64Bit(pid);
@@ -94,57 +254,137 @@ static bool InjectOne(DWORD pid) {
         dllPath = exeDir + L"ghost_core_x86.dll";
     }
 
-    // Check files exist
-    if (GetFileAttributesW(launcherPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        fprintf(stderr, "Error: Launcher not found: %ls\n", launcherPath.c_str());
-        return false;
-    }
+    // Check DLL exists
     if (GetFileAttributesW(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         fprintf(stderr, "Error: DLL not found: %ls\n", dllPath.c_str());
         return false;
     }
 
-    // Build command line: launcher.exe <pid> <dllPath>
-    wchar_t cmdLine[1024];
-    swprintf(cmdLine, 1024, L"\"%ls\" %lu \"%ls\"", launcherPath.c_str(), pid, dllPath.c_str());
+#ifdef _WIN64
+    bool crossArch = !target64; // x64 CLI injecting into x86 target
+#else
+    bool crossArch = target64;  // x86 CLI injecting into x64 target
+#endif
 
-    STARTUPINFOW si = { sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
+    // 0. Write config file next to DLL so the target process can read it
+    WriteConfigForDll(dllPath);
 
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
-                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        fprintf(stderr, "Error: Failed to launch injector for PID %lu (error %lu)\n",
-                pid, GetLastError());
-        return false;
-    }
+    // 1. Direct injection (matches original ghost_injector approach)
+    if (!crossArch) {
+        DWORD result = DirectInject(pid, dllPath);
+        if (result == 0) {
+            printf("  Injected PID %lu (%s)\n", pid, target64 ? "x64" : "x86");
+            return true;
+        }
 
-    // Wait for launcher to complete
-    WaitForSingleObject(pi.hProcess, 15000);
-    DWORD exitCode = 1;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+        // On access denied, try elevated launcher before giving up
+        if (result == 2) {
+            fprintf(stderr, "  PID %lu: access denied — retrying elevated...\n", pid);
+            if (TryLauncherInject(pid, launcherPath, dllPath, true)) {
+                printf("  Injected PID %lu (%s) [elevated]\n", pid, target64 ? "x64" : "x86");
+                return true;
+            }
+        }
 
-    if (exitCode != 0) {
         const char* errMsg = "Unknown error";
-        switch (exitCode) {
+        switch (result) {
             case 2: errMsg = "Cannot open process (access denied)"; break;
             case 3: errMsg = "Cannot find LoadLibraryW address"; break;
             case 4: errMsg = "Cannot allocate memory in target process"; break;
             case 5: errMsg = "Cannot write DLL path to target process"; break;
             case 6: errMsg = "Cannot create remote thread"; break;
-            case 7: errMsg = "Invalid PID (0)"; break;
             case 8: errMsg = "DLL load failed (LoadLibraryW returned NULL)"; break;
         }
         fprintf(stderr, "Error: Injection failed for PID %lu: %s (code %lu)\n",
-                pid, errMsg, exitCode);
+                pid, errMsg, result);
         return false;
     }
 
-    printf("  Injected PID %lu (%s)\n", pid, target64 ? "x64" : "x86");
-    return true;
+    // 2. Cross-arch: must use launcher
+    if (GetFileAttributesW(launcherPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        fprintf(stderr, "Error: Launcher not found: %ls\n", launcherPath.c_str());
+        return false;
+    }
+
+    if (TryLauncherInject(pid, launcherPath, dllPath, false) ||
+        TryLauncherInject(pid, launcherPath, dllPath, true)) {
+        printf("  Injected PID %lu (%s)\n", pid, target64 ? "x64" : "x86");
+        return true;
+    }
+
+    fprintf(stderr, "Error: Injection failed for PID %lu (cross-arch launcher)\n", pid);
+    return false;
+}
+
+// ---- Live Log Listener ----
+static volatile bool g_logRunning = true;
+
+static BOOL WINAPI LogCtrlHandler(DWORD fdwCtrlType) {
+    if (fdwCtrlType == CTRL_C_EVENT || fdwCtrlType == CTRL_BREAK_EVENT) {
+        g_logRunning = false;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static const char* TagColor(const char* tag) {
+    if (!tag || !*tag) return "\x1b[0m";
+    if (strstr(tag, "FAILED") || strstr(tag, "fail") || strstr(tag, "Error") || strstr(tag, "error"))
+        return "\x1b[31m";
+    if (strstr(tag, "DNS"))
+        return "\x1b[36m";
+    if (strstr(tag, "Proxy") || strstr(tag, "Handshake"))
+        return "\x1b[33m";
+    if (strstr(tag, "hook"))
+        return "\x1b[35m";
+    if (strstr(tag, "Init"))
+        return "\x1b[1;37m";
+    if (strstr(tag, "Cache"))
+        return "\x1b[32m";
+    return "\x1b[0m";
+}
+
+static void RunLogListener(SOCKET logSock, size_t injectedCount) {
+    SetConsoleCtrlHandler(LogCtrlHandler, TRUE);
+
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (GetConsoleMode(hOut, &mode))
+        SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+    printf("\n--- Live Log (%zu process(es) injected) ---\n", injectedCount);
+    printf("Press Ctrl+C to stop.\n\n");
+
+    char buf[2048];
+    while (g_logRunning) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(logSock, &rfds);
+        timeval tv = { 1, 0 };
+        int sel = select(0, &rfds, NULL, NULL, &tv);
+        if (sel < 0) break;
+        if (sel == 0) continue;
+
+        int n = recv(logSock, buf, sizeof(buf) - 1, 0);
+        if (n <= 0) continue;
+        buf[n] = '\0';
+
+        // Extract tag for color: format is "[REL_TS] [PID:TID] TAG rest..."
+        const char* color = "\x1b[0m";
+        const char* p = buf;
+        // skip "[REL_TS] "
+        if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
+        // skip "[PID:TID] "
+        if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
+        // p now points at TAG
+        color = TagColor(p);
+
+        printf("%s%s\x1b[0m\n", color, buf);
+        fflush(stdout);
+    }
+
+    SetConsoleCtrlHandler(LogCtrlHandler, FALSE);
+    printf("\nLog listener stopped.\n");
 }
 
 // ---- cmd_inject ----
@@ -189,6 +429,65 @@ int cmd_inject(int argc, wchar_t* argv[]) {
     std::sort(pids.begin(), pids.end());
     pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
 
+    // Allocate UDP log listener port (OS picks a free port)
+    SOCKET logSock = INVALID_SOCKET;
+    int logPort = 0;
+    {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        logSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (logSock != INVALID_SOCKET) {
+            sockaddr_in addr = {};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+            addr.sin_port = 0;
+            if (bind(logSock, (sockaddr*)&addr, sizeof(addr)) == 0) {
+                int addrLen = sizeof(addr);
+                getsockname(logSock, (sockaddr*)&addr, &addrLen);
+                logPort = ntohs(addr.sin_port);
+                char portStr[16];
+                snprintf(portStr, sizeof(portStr), "%d", logPort);
+                SetEnvironmentVariableA("GHOST_LOG_PORT", portStr);
+            } else {
+                closesocket(logSock);
+                logSock = INVALID_SOCKET;
+            }
+        }
+    }
+
+    // Export config.json to environment variables so WriteConfigForDll
+    // can write ghost_config.ini for the injected DLL.
+    {
+        json cfg = LoadConfig();
+
+        // Active upstream → GHOST_PROXY / GHOST_PROXY_PORT
+        if (cfg.contains("upstream") && cfg["upstream"].is_array()) {
+            for (auto& u : cfg["upstream"]) {
+                if (u.value("active", false)) {
+                    std::string addr = u.value("addr", "");
+                    size_t colon = addr.find(':');
+                    if (colon != std::string::npos) {
+                        SetEnvironmentVariableA("GHOST_PROXY", addr.substr(0, colon).c_str());
+                        SetEnvironmentVariableA("GHOST_PROXY_PORT", addr.substr(colon + 1).c_str());
+                    }
+                    std::string name = u.value("name", "");
+                    if (!name.empty()) SetEnvironmentVariableA("GHOST_NODE", name.c_str());
+                    break;
+                }
+            }
+        }
+
+        // DNS config → GHOST_DNS / GHOST_DNS_PORT / GHOST_DNS_MODE
+        if (cfg.contains("dns") && cfg["dns"].is_object()) {
+            std::string server = cfg["dns"].value("server", "8.8.8.8");
+            SetEnvironmentVariableA("GHOST_DNS", server.c_str());
+            SetEnvironmentVariableA("GHOST_DNS_PORT", "53");
+            // Default to "dot" (DNS-over-TCP via proxy) when DNS is enabled
+            bool dnsEnabled = cfg["dns"].value("enabled", true);
+            SetEnvironmentVariableA("GHOST_DNS_MODE", dnsEnabled ? "dot" : "system");
+        }
+    }
+
     printf(treeMode
            ? "Injecting %zu processes (%zu target(s) + trees)...\n"
            : "Injecting %zu process(es)...\n",
@@ -204,6 +503,12 @@ int cmd_inject(int argc, wchar_t* argv[]) {
     }
 
     printf("Done: %d succeeded, %d failed\n", successCount, failCount);
+
+    // Enter live log listener
+    if (logSock != INVALID_SOCKET) {
+        RunLogListener(logSock, successCount);
+        closesocket(logSock);
+    }
     return failCount > 0 ? 1 : 0;
 }
 
@@ -291,7 +596,7 @@ int cmd_eject(int argc, wchar_t* argv[]) {
         CloseHandle(h);
 
         if (!found) {
-            fprintf(stderr, "  Error: ghost_core.dll not found in process %lu\n", pid);
+            fprintf(stderr, "  Error: ghost_core not found in process %lu\n", pid);
             failCount++;
         } else if (ok) {
             okCount++;
