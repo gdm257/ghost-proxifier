@@ -7,6 +7,7 @@ set(CLI_SOURCES
     commands_monitor.cpp
     process_tree.cpp
     utils.cpp
+    resources.rc
 )
 
 add_executable(ghost-proxifier ${CLI_SOURCES})
