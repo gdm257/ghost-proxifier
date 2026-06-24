@@ -383,6 +383,75 @@ DNS_STATUS WINAPI hook_DnsQuery_A(PCSTR pszName, WORD wType, DWORD Options,
     return ret;
 }
 
+// --- DnsQueryEx hook (Windows 8+ async DNS, preferred by modern Chromium) ---
+DNS_STATUS WINAPI hook_DnsQueryEx(PDNS_QUERY_REQUEST pRequest, PDNS_QUERY_RESULT pResult, PVOID pCancelHandle) {
+    if (!g_Initialized)
+        return real_DnsQueryEx(pRequest, pResult, pCancelHandle);
+    PerformLazyInitialization();
+
+    if (!pRequest || !pResult || pRequest->Version < 1)
+        return real_DnsQueryEx(pRequest, pResult, pCancelHandle);
+
+    // Only intercept A / AAAA queries for domain names
+    if (!pRequest->QueryName || (pRequest->QueryType != DNS_TYPE_A && pRequest->QueryType != DNS_TYPE_AAAA))
+        return real_DnsQueryEx(pRequest, pResult, pCancelHandle);
+
+    char ascii_node[1024] = { 0 };
+    WideCharToMultiByte(CP_UTF8, 0, pRequest->QueryName, -1, ascii_node, sizeof(ascii_node), NULL, NULL);
+
+    if (inet_addr(ascii_node) != INADDR_NONE)
+        return real_DnsQueryEx(pRequest, pResult, pCancelHandle);
+
+    std::string domain = ascii_node;
+    if (!domain.empty() && domain.back() == '.') domain.pop_back();
+
+    std::string dnsMode;
+    {
+        std::lock_guard<std::mutex> lock(g_ConfigMutex);
+        dnsMode = g_Config.DnsMode;
+    }
+
+    std::vector<DWORD> ips = dnsMode == "dot" ? ProxyDnsResolve(domain.c_str()) : std::vector<DWORD>();
+    if (!ips.empty()) {
+        for (DWORD ip : ips) {
+            RecordIpDomainMapping(ip, domain);
+        }
+        DWORD ip_net = ips[0];
+        size_t nameLen = (wcslen(pRequest->QueryName) + 1) * sizeof(WCHAR);
+
+        DNS_RECORDW* rec = (DNS_RECORDW*)LocalAlloc(LPTR, sizeof(DNS_RECORDW) + nameLen);
+        if (rec) {
+            rec->pNext = NULL;
+            rec->pName = (PWSTR)((BYTE*)rec + sizeof(DNS_RECORDW));
+            memcpy(rec->pName, pRequest->QueryName, nameLen);
+            rec->wType = (pRequest->QueryType == DNS_TYPE_AAAA) ? DNS_TYPE_A : pRequest->QueryType;
+            rec->wDataLength = sizeof(DWORD);
+            rec->Flags.DW = 0;
+            rec->dwTtl = 300;
+            rec->dwReserved = 0;
+            rec->Data.A.IpAddress = ip_net;
+
+            pResult->Version = 1;
+            pResult->QueryStatus = ERROR_SUCCESS;
+            pResult->QueryOptions = 0;
+            pResult->pQueryRecords = (PDNS_RECORD)rec;
+            return ERROR_SUCCESS;
+        }
+    }
+
+    // Fallback to system resolver
+    NetLog("[DNS-Proxy] DnsQueryEx: proxy DNS failed for %s, fallback", ascii_node);
+    DNS_STATUS ret = real_DnsQueryEx(pRequest, pResult, pCancelHandle);
+    if (ret == ERROR_SUCCESS && pResult && pResult->pQueryRecords) {
+        for (DNS_RECORDW* r = (DNS_RECORDW*)pResult->pQueryRecords; r; r = r->pNext) {
+            if (r->wType == DNS_TYPE_A) {
+                RecordIpDomainMapping(r->Data.A.IpAddress, domain);
+            }
+        }
+    }
+    return ret;
+}
+
 // ============================================================================
 // InstallDnsHooks: register all DNS-related MinHook hooks
 // ============================================================================
@@ -393,4 +462,5 @@ void InstallDnsHooks() {
     if (real_GetAddrInfoExW) MH_CreateHook((void*)real_GetAddrInfoExW, (void*)hook_GetAddrInfoExW, (void**)&real_GetAddrInfoExW);
     if (real_DnsQuery_W) MH_CreateHook((void*)real_DnsQuery_W, (void*)hook_DnsQuery_W, (void**)&real_DnsQuery_W);
     if (real_DnsQuery_A) MH_CreateHook((void*)real_DnsQuery_A, (void*)hook_DnsQuery_A, (void**)&real_DnsQuery_A);
+    if (real_DnsQueryEx) MH_CreateHook((void*)real_DnsQueryEx, (void*)hook_DnsQueryEx, (void**)&real_DnsQueryEx);
 }

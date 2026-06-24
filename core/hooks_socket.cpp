@@ -307,7 +307,7 @@ int WINAPI hook_connect(SOCKET s, const sockaddr* name, int namelen) {
             // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
             if (type == SOCK_DGRAM && port == 443) {
                 NetLog("[QUIC] Blocking UDP 443 to %s:%d to force TCP fallback", ip, port);
-                WSASetLastError(WSAECONNREFUSED);
+                WSASetLastError(WSAENETUNREACH);
                 return SOCKET_ERROR;
             }
             if (t->sin_addr.s_addr == inet_addr("127.0.0.1"))
@@ -437,7 +437,7 @@ int WINAPI hook_send(SOCKET s, const char* buf, int len, int flags) {
                 if (port == 443) {
                     NetLog("[QUIC] Closing connected QUIC socket (send) to force TCP fallback");
                     real_closesocket(s);
-                    WSASetLastError(WSAECONNREFUSED);
+                    WSASetLastError(WSAENETUNREACH);
                     return SOCKET_ERROR;
                 }
             }
@@ -497,7 +497,7 @@ int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
                 if (port == 443) {
                     NetLog("[QUIC] Closing connected QUIC socket (WSASend) to force TCP fallback");
                     real_closesocket(s);
-                    WSASetLastError(WSAECONNREFUSED);
+                    WSASetLastError(WSAENETUNREACH);
                     return SOCKET_ERROR;
                 }
             }
@@ -541,6 +541,26 @@ int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
         return SOCKET_ERROR;
     }
 
+    // Block QUIC on connected UDP sockets (pre-existing before injection)
+    {
+        int type = 0, optlen = sizeof(type);
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) == 0 && type == SOCK_DGRAM) {
+            sockaddr_storage peer;
+            int plen = sizeof(peer);
+            if (getpeername(s, (sockaddr*)&peer, &plen) == 0) {
+                int port = 0;
+                if (peer.ss_family == AF_INET) port = ntohs(((sockaddr_in*)&peer)->sin_port);
+                else if (peer.ss_family == AF_INET6) port = ntohs(((sockaddr_in6*)&peer)->sin6_port);
+                if (port == 443) {
+                    NetLog("[QUIC] Closing QUIC socket (recv) to force TCP fallback");
+                    real_closesocket(s);
+                    WSASetLastError(WSAENETUNREACH);
+                    return SOCKET_ERROR;
+                }
+            }
+        }
+    }
+
     return real_recv(s, buf, len, flags);
 }
 
@@ -578,6 +598,26 @@ int WINAPI hook_WSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWO
         return SOCKET_ERROR;
     }
 
+    // Block QUIC on connected UDP sockets (pre-existing before injection)
+    {
+        int type = 0, optlen = sizeof(type);
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) == 0 && type == SOCK_DGRAM) {
+            sockaddr_storage peer;
+            int plen = sizeof(peer);
+            if (getpeername(s, (sockaddr*)&peer, &plen) == 0) {
+                int port = 0;
+                if (peer.ss_family == AF_INET) port = ntohs(((sockaddr_in*)&peer)->sin_port);
+                else if (peer.ss_family == AF_INET6) port = ntohs(((sockaddr_in6*)&peer)->sin6_port);
+                if (port == 443) {
+                    NetLog("[QUIC] Closing QUIC socket (WSARecv) to force TCP fallback");
+                    real_closesocket(s);
+                    WSASetLastError(WSAENETUNREACH);
+                    return SOCKET_ERROR;
+                }
+            }
+        }
+    }
+
     return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
 }
 
@@ -601,7 +641,7 @@ int WINAPI hook_sendto(SOCKET s, const char* buf, int len, int flags,
         if (target_port == 443) {
             NetLog("[QUIC] hook_sendto: Closing QUIC socket to force TCP fallback");
             real_closesocket(s);
-            WSASetLastError(WSAECONNREFUSED);
+            WSASetLastError(WSAENETUNREACH);
             return SOCKET_ERROR;
         }
 
@@ -653,7 +693,7 @@ int WINAPI hook_WSASendTo(
         if (target_port == 443) {
             NetLog("[QUIC] hook_WSASendTo: Closing QUIC socket to force TCP fallback");
             real_closesocket(s);
-            WSASetLastError(WSAECONNREFUSED);
+            WSASetLastError(WSAENETUNREACH);
             return SOCKET_ERROR;
         }
 

@@ -9,8 +9,9 @@ void PrintUsage() {
     printf("Usage: ghost-proxifier <command> [options]\n\n");
     printf("Commands:\n");
     printf("  list                     List all processes with proxy status\n");
-    printf("  inject <pid|name>        Inject ghost_core.dll + live log tail\n");
-    printf("  inject --tree <pid|name> Inject process + all child processes + live log tail\n");
+    printf("  inject <name>             Watch + inject on start (clean, no stale connections)\n");
+    printf("  inject <pid>              Inject existing process immediately\n");
+    printf("  inject --tree <pid|name>  Also inject child processes\n");
     printf("  eject <pid>              Unload DLL from process\n");
     printf("  status                   Show global proxy status\n");
     printf("  proxy on|off             Enable/disable system proxy\n");

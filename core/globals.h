@@ -54,6 +54,7 @@ typedef INT (WSAAPI* GetAddrInfoExW_t)(PCWSTR pName, PCWSTR pServiceName, DWORD 
 typedef DNS_STATUS (WINAPI* DnsQuery_W_t)(PCWSTR pszName, WORD wType, DWORD Options, PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
 typedef DNS_STATUS (WINAPI* DnsQuery_A_t)(PCSTR pszName, WORD wType, DWORD Options, PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
 typedef void (WINAPI* DnsFree_t)(PVOID pData, DNS_FREE_TYPE FreeType);
+typedef DNS_STATUS (WINAPI* DnsQueryEx_t)(PDNS_QUERY_REQUEST pRequest, PDNS_QUERY_RESULT pResult, PVOID pCancelHandle);
 
 // --- Shellcode byte arrays ---
 extern const unsigned char kThreadCtxX64[];
@@ -89,6 +90,7 @@ extern GetAddrInfoExW_t          real_GetAddrInfoExW;
 extern DnsQuery_W_t              real_DnsQuery_W;
 extern DnsQuery_A_t              real_DnsQuery_A;
 extern DnsFree_t                 real_DnsFree;
+extern DnsQueryEx_t              real_DnsQueryEx;
 extern CreateProcessW_t          real_CreateProcessW;
 extern CreateProcessA_t          real_CreateProcessA;
 extern CreateProcessAsUserW_t    real_CreateProcessAsUserW;
@@ -307,4 +309,5 @@ DNS_STATUS WINAPI hook_DnsQuery_W(PCWSTR pszName, WORD wType, DWORD Options,
     PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
 DNS_STATUS WINAPI hook_DnsQuery_A(PCSTR pszName, WORD wType, DWORD Options,
     PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
+DNS_STATUS WINAPI hook_DnsQueryEx(PDNS_QUERY_REQUEST pRequest, PDNS_QUERY_RESULT pResult, PVOID pCancelHandle);
 

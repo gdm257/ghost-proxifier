@@ -34,6 +34,7 @@ GetAddrInfoExW_t          real_GetAddrInfoExW = NULL;
 DnsQuery_W_t              real_DnsQuery_W = NULL;
 DnsQuery_A_t              real_DnsQuery_A = NULL;
 DnsFree_t                 real_DnsFree = NULL;
+DnsQueryEx_t              real_DnsQueryEx = NULL;
 CreateProcessW_t          real_CreateProcessW = NULL;
 CreateProcessA_t          real_CreateProcessA = NULL;
 CreateProcessAsUserW_t    real_CreateProcessAsUserW = NULL;
@@ -98,6 +99,7 @@ void SetupThreadInternal() {
         real_DnsQuery_W = (DnsQuery_W_t)GetProcAddress(hDnsapi, "DnsQuery_W");
         real_DnsQuery_A = (DnsQuery_A_t)GetProcAddress(hDnsapi, "DnsQuery_A");
         real_DnsFree = (DnsFree_t)GetProcAddress(hDnsapi, "DnsFree");
+        real_DnsQueryEx = (DnsQueryEx_t)GetProcAddress(hDnsapi, "DnsQueryEx");
     }
 
     // Install hooks by category
@@ -111,6 +113,9 @@ void SetupThreadInternal() {
 
     extern DWORD WINAPI DnsProxyThread(LPVOID);
     CreateThread(NULL, 0, DnsProxyThread, NULL, 0, NULL);
+
+    // Close pre-existing QUIC (UDP 443) sockets so Chrome/Edge fall back to TCP.
+    //BreakExistingConnections();
 
     // Export config to env vars so child processes inherit proxy settings.
     EnvInjectFromConfig();

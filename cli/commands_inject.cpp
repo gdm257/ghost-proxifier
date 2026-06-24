@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <set>
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <shellapi.h>
@@ -344,6 +345,20 @@ static const char* TagColor(const char* tag) {
     return "\x1b[0m";
 }
 
+// Print a single colorized log line
+static void PrintLogLine(char* buf, int len) {
+    if (len <= 0) return;
+    buf[len] = '\0';
+    const char* color = "\x1b[0m";
+    const char* p = buf;
+    if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
+    if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
+    color = TagColor(p);
+    printf("%s%s\x1b[0m\n", color, buf);
+    fflush(stdout);
+}
+
+// Log listener for --now mode (inject existing processes, then show logs)
 static void RunLogListener(SOCKET logSock, size_t injectedCount) {
     SetConsoleCtrlHandler(LogCtrlHandler, TRUE);
 
@@ -366,43 +381,102 @@ static void RunLogListener(SOCKET logSock, size_t injectedCount) {
         if (sel == 0) continue;
 
         int n = recv(logSock, buf, sizeof(buf) - 1, 0);
-        if (n <= 0) continue;
-        buf[n] = '\0';
-
-        // Extract tag for color: format is "[REL_TS] [PID:TID] TAG rest..."
-        const char* color = "\x1b[0m";
-        const char* p = buf;
-        // skip "[REL_TS] "
-        if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
-        // skip "[PID:TID] "
-        if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
-        // p now points at TAG
-        color = TagColor(p);
-
-        printf("%s%s\x1b[0m\n", color, buf);
-        fflush(stdout);
+        PrintLogLine(buf, n);
     }
 
     SetConsoleCtrlHandler(LogCtrlHandler, FALSE);
     printf("\nLog listener stopped.\n");
 }
 
+// Watch + Log listener for default inject mode.
+// Polls for new instances of targetName and injects immediately on discovery,
+// while simultaneously showing live UDP logs from injected processes.
+static void RunWatchLogListener(SOCKET logSock, const std::wstring& targetName, bool treeMode, int alreadyInjected) {
+    SetConsoleCtrlHandler(LogCtrlHandler, TRUE);
+
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (GetConsoleMode(hOut, &mode))
+        SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+    // Snapshot already-known PIDs so we don't double-inject
+    std::set<DWORD> knownPids;
+    {
+        auto initial = FindPidsByName(targetName);
+        knownPids.insert(initial.begin(), initial.end());
+    }
+
+    if (alreadyInjected > 0) {
+        printf("\n--- Live Log (%d process(es) injected) + Watching for new %ls ---\n",
+               alreadyInjected, targetName.c_str());
+    } else {
+        printf("\nWatching for %ls... (new instances will be injected immediately)\n", targetName.c_str());
+        if (!knownPids.empty()) {
+            printf("Note: %zu existing %ls process(es) detected — use --now to inject them instead.\n",
+                   knownPids.size(), targetName.c_str());
+        }
+    }
+    printf("Press Ctrl+C to stop.\n\n");
+
+    int watchInjected = 0;
+    DWORD lastPoll = 0; // poll immediately on first iteration
+    char buf[2048];
+
+    while (g_logRunning) {
+        // Poll for new processes every 200 ms
+        DWORD tick = GetTickCount();
+        if (tick - lastPoll >= 200) {
+            lastPoll = tick;
+            auto current = FindPidsByName(targetName);
+            for (auto pid : current) {
+                if (knownPids.find(pid) == knownPids.end()) {
+                    knownPids.insert(pid);
+
+                    std::vector<DWORD> injectPids;
+                    injectPids.push_back(pid);
+                    if (treeMode) {
+                        auto children = GetProcessTree(pid);
+                        injectPids.insert(injectPids.end(), children.begin(), children.end());
+                    }
+
+                    for (auto injPid : injectPids) {
+                        if (InjectOne(injPid)) {
+                            watchInjected++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check UDP log socket (200 ms timeout so poll stays responsive)
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(logSock, &rfds);
+        timeval tv = { 0, 200000 };
+        int sel = select(0, &rfds, NULL, NULL, &tv);
+        if (sel < 0) break;
+        if (sel > 0) {
+            int n = recv(logSock, buf, sizeof(buf) - 1, 0);
+            PrintLogLine(buf, n);
+        }
+    }
+
+    SetConsoleCtrlHandler(LogCtrlHandler, FALSE);
+    printf("\nWatch stopped. %d new process(es) injected.\n", watchInjected);
+}
+
 // ---- cmd_inject ----
-// Usage: inject <pid|name>          — inject single process
-//        inject --tree <pid|name>   — inject process + all descendants
+// Usage: inject <pid>               — inject existing process immediately
+//        inject <name>              — watch for process to start, inject instantly
+//        inject --tree <pid|name>   — also inject child processes
 
 int cmd_inject(int argc, wchar_t* argv[]) {
     bool treeMode = false;
     int argIdx = 2;
 
-    if (argc < 3) {
-        fprintf(stderr, "Usage: ghost-proxifier inject [--tree] <pid|name>\n");
-        return 1;
-    }
-
-    if (wcscmp(argv[2], L"--tree") == 0) {
+    while (argIdx < argc && wcscmp(argv[argIdx], L"--tree") == 0) {
         treeMode = true;
-        argIdx = 3;
+        argIdx++;
     }
 
     if (argc <= argIdx) {
@@ -410,24 +484,12 @@ int cmd_inject(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    std::vector<DWORD> targets;
-    if (!ResolvePids(argv[argIdx], targets)) {
-        return 1;
-    }
+    // Check if argument is a numeric PID (inject existing, no watch)
+    wchar_t* end = nullptr;
+    DWORD numericPid = wcstoul(argv[argIdx], &end, 10);
+    bool isNumericPid = (end && *end == 0 && numericPid > 0);
 
-    // Inject all resolved PIDs (by name may match multiple processes)
-    std::vector<DWORD> pids;
-    for (auto pid : targets) {
-        pids.push_back(pid);
-        if (treeMode) {
-            auto children = GetProcessTree(pid);
-            pids.insert(pids.end(), children.begin(), children.end());
-        }
-    }
-
-    // Deduplicate (targets may overlap with children)
-    std::sort(pids.begin(), pids.end());
-    pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
+    std::wstring targetName = argv[argIdx];
 
     // Allocate UDP log listener port (OS picks a free port)
     SOCKET logSock = INVALID_SOCKET;
@@ -460,7 +522,6 @@ int cmd_inject(int argc, wchar_t* argv[]) {
     {
         json cfg = LoadConfig();
 
-        // Active upstream → GHOST_PROXY / GHOST_PROXY_PORT
         if (cfg.contains("upstream") && cfg["upstream"].is_array()) {
             for (auto& u : cfg["upstream"]) {
                 if (u.value("active", false)) {
@@ -477,39 +538,46 @@ int cmd_inject(int argc, wchar_t* argv[]) {
             }
         }
 
-        // DNS config → GHOST_DNS / GHOST_DNS_PORT / GHOST_DNS_MODE
         if (cfg.contains("dns") && cfg["dns"].is_object()) {
             std::string server = cfg["dns"].value("server", "8.8.8.8");
             SetEnvironmentVariableA("GHOST_DNS", server.c_str());
             SetEnvironmentVariableA("GHOST_DNS_PORT", "53");
-            // Default to "dot" (DNS-over-TCP via proxy) when DNS is enabled
             bool dnsEnabled = cfg["dns"].value("enabled", true);
             SetEnvironmentVariableA("GHOST_DNS_MODE", dnsEnabled ? "dot" : "system");
         }
     }
 
-    printf(treeMode
-           ? "Injecting %zu processes (%zu target(s) + trees)...\n"
-           : "Injecting %zu process(es)...\n",
-           pids.size(), targets.size());
+    if (isNumericPid) {
+        // Numeric PID: inject existing process immediately
+        std::vector<DWORD> pids;
+        pids.push_back(numericPid);
+        if (treeMode) {
+            auto children = GetProcessTree(numericPid);
+            pids.insert(pids.end(), children.begin(), children.end());
+        }
 
-    int successCount = 0;
-    int failCount = 0;
-    for (auto pid : pids) {
-        if (InjectOne(pid))
-            successCount++;
-        else
-            failCount++;
+        printf("Injecting %zu process(es)...\n", pids.size());
+
+        int successCount = 0;
+        for (auto pid : pids) {
+            if (InjectOne(pid)) successCount++;
+        }
+        printf("Done: %d succeeded, %zu failed\n", successCount, pids.size() - successCount);
+
+        if (logSock != INVALID_SOCKET) {
+            RunLogListener(logSock, successCount);
+            closesocket(logSock);
+        }
+        return (successCount == pids.size()) ? 0 : 1;
     }
 
-    printf("Done: %d succeeded, %d failed\n", successCount, failCount);
-
-    // Enter live log listener
+    // Process name: watch mode — wait for process to start, inject instantly
+    // before it creates any connections
     if (logSock != INVALID_SOCKET) {
-        RunLogListener(logSock, successCount);
+        RunWatchLogListener(logSock, targetName, treeMode, 0);
         closesocket(logSock);
     }
-    return failCount > 0 ? 1 : 0;
+    return 0;
 }
 
 // ---- cmd_eject ----

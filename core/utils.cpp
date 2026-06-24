@@ -100,64 +100,94 @@ void NetLog(const char* format, ...) {
     }
 }
 
-// --- BreakExistingConnections: force-close existing TCP connections ---
+// --- CloseExistingQuicSockets: force-close pre-existing QUIC UDP sockets ---
+// Chrome/Edge cache QUIC sessions; our connect/sendto hooks block NEW QUIC,
+// but pre-injection QUIC sockets persist.  We enumerate the current process's
+// handles via NtQuerySystemInformation, find UDP sockets connected to port
+// 443, and close them so the browser falls back to TCP immediately.
 void BreakExistingConnections() {
     DWORD pid = GetCurrentProcessId();
 
-    std::string proxyIP;
-    int proxyPort;
-    {
-        std::lock_guard<std::mutex> lock(g_ConfigMutex);
-        proxyIP = g_Config.ProxyIP;
-        proxyPort = g_Config.ProxyPort;
+    // -- NtQuerySystemInformation boilerplate (ntdll.dll) --
+    typedef long NTSTATUS;
+    #define SystemHandleInformation 16
+
+    typedef struct _SYSTEM_HANDLE {
+        ULONG  ProcessId;
+        BYTE   ObjectTypeNumber;
+        BYTE   Flags;
+        USHORT Handle;
+        PVOID  Object;
+        ACCESS_MASK GrantedAccess;
+    } SYSTEM_HANDLE, *PSYSTEM_HANDLE;
+
+    typedef struct _SYSTEM_HANDLE_INFORMATION {
+        ULONG         Count;
+        SYSTEM_HANDLE Handles[1];
+    } SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
+
+    typedef NTSTATUS(NTAPI* pNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+    static pNtQuerySystemInformation NtQuerySysInfo = NULL;
+    if (!NtQuerySysInfo) {
+        NtQuerySysInfo = (pNtQuerySystemInformation)
+            GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
     }
-    DWORD proxyAddr = inet_addr(proxyIP.c_str());
+    if (!NtQuerySysInfo) return;
 
-    // Get required buffer size for IPv4 TCP connections
-    ULONG size = 0;
-    if (GetExtendedTcpTable(NULL, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != ERROR_INSUFFICIENT_BUFFER)
-        return;
+    // Query handle list with retry on buffer growth
+    ULONG bufSize = 0x100000; // 1 MB — Chrome can have tens of thousands of handles
+    std::vector<BYTE> buf(bufSize);
+    NTSTATUS st;
+    for (int retry = 0; retry < 3; retry++) {
+        ULONG needed = 0;
+        st = NtQuerySysInfo(SystemHandleInformation, buf.data(), bufSize, &needed);
+        if (st == 0) break;
+        if (needed > bufSize) bufSize = needed + 0x10000;
+        else bufSize *= 2;
+        buf.resize(bufSize);
+    }
+    if (st != 0) return;
 
-    std::vector<BYTE> buf(size);
-    PMIB_TCPTABLE_OWNER_PID table = (PMIB_TCPTABLE_OWNER_PID)buf.data();
-    if (GetExtendedTcpTable(table, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != NO_ERROR)
-        return;
+    PSYSTEM_HANDLE_INFORMATION info = (PSYSTEM_HANDLE_INFORMATION)buf.data();
+    int closed = 0;
 
-    int broken = 0;
-    for (DWORD i = 0; i < table->dwNumEntries; i++) {
-        MIB_TCPROW_OWNER_PID& row = table->table[i];
-        if (row.dwOwningPid != pid) continue;
+    for (ULONG i = 0; i < info->Count; i++) {
+        if (info->Handles[i].ProcessId != pid) continue;
 
-        DWORD localhost = inet_addr("127.0.0.1");
+        SOCKET s = (SOCKET)(ULONG_PTR)info->Handles[i].Handle;
 
-        // Skip localhost connections (internal comms)
-        if (row.dwRemoteAddr == localhost) continue;
-        // Skip connections already to proxy
-        if (row.dwRemoteAddr == proxyAddr && ntohs((u_short)row.dwRemotePort) == (u_short)proxyPort) continue;
-        // Skip listening sockets
-        if (row.dwState == MIB_TCP_STATE_LISTEN) continue;
-        // Skip already closed
-        if (row.dwState == MIB_TCP_STATE_CLOSED) continue;
-        // Skip time_wait (already half-closed)
-        if (row.dwState == MIB_TCP_STATE_TIME_WAIT) continue;
+        int type = 0, optlen = sizeof(type);
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) != 0)
+            continue;                 // not a socket, or invalid handle
+        if (type != SOCK_DGRAM)       // we only care about UDP
+            continue;
 
-        MIB_TCPROW delRow;
-        delRow.dwState = MIB_TCP_STATE_DELETE_TCB; // 12 — force TCB teardown
-        delRow.dwLocalAddr = row.dwLocalAddr;
-        delRow.dwLocalPort = row.dwLocalPort;
-        delRow.dwRemoteAddr = row.dwRemoteAddr;
-        delRow.dwRemotePort = row.dwRemotePort;
+        sockaddr_storage peer;
+        int plen = sizeof(peer);
+        if (getpeername(s, (sockaddr*)&peer, &plen) != 0)
+            continue;                 // not connected
 
-        if (SetTcpEntry(&delRow) == NO_ERROR) {
-            struct in_addr a; a.s_addr = row.dwRemoteAddr;
-            NetLog("[Init] Broken existing connection: %s:%d",
-                inet_ntoa(a), ntohs((u_short)row.dwRemotePort));
-            broken++;
-        }
+        int port = 0;
+        if (peer.ss_family == AF_INET)
+            port = ntohs(((sockaddr_in*)&peer)->sin_port);
+        else if (peer.ss_family == AF_INET6)
+            port = ntohs(((sockaddr_in6*)&peer)->sin6_port);
+        if (port != 443) continue;
+
+        // Found a connected QUIC socket — close it
+        char ip[INET6_ADDRSTRLEN] = "";
+        if (peer.ss_family == AF_INET)
+            inet_ntop(AF_INET, &((sockaddr_in*)&peer)->sin_addr, ip, sizeof(ip));
+        else
+            inet_ntop(AF_INET6, &((sockaddr_in6*)&peer)->sin6_addr, ip, sizeof(ip));
+
+        closesocket(s);
+        NetLog("[Init] Closed existing QUIC socket: %s:443", ip);
+        closed++;
     }
 
-    if (broken > 0) {
-        NetLog("[Init] Broken %d existing TCP connections to force proxy path.", broken);
+    if (closed > 0) {
+        NetLog("[Init] Closed %d existing QUIC socket(s) — browser will fall back to TCP.", closed);
     }
 }
 
