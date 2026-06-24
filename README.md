@@ -21,9 +21,11 @@
   <a href="#使用">基本用法</a>
 </p>
 
----
+<p align="center">
+  🚀 <a href="https://www.ghostproxifier.com/"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
+</p>
 
-> 🚀 **Pro 版本**: 如果你需要一个带现代化 UI、进程规则管理、流量面板等高级功能的版本，请访问 [Ghost Proxifier Pro](https://www.ghostproxifier.com/) 或 [GitHub 仓库](https://github.com/liliBestCoder/ghost-proxifier-pro)。
+---
 
 ## 简介
 
