@@ -28,6 +28,9 @@ install_manifest.txt
 *.tmp
 *.lnk
 
+# Release
+*.zip
+
 # Compiled
 proc-proxy/
 *.obj
