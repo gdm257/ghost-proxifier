@@ -1,10 +1,31 @@
-# Ghost Proxifier
+<!-- LOGO -->
+<p align="center">
+  <img src="app_icon.ico" alt="Logo" width="96">
+</p>
 
-进程级透明代理工具。通过 DLL 注入 Hook Winsock API，将目标进程的所有网络流量透明转发到 **HTTP** 代理，无需修改路由表、无需指定路由规则。
+<h1 align="center">Ghost Proxifier</h1>
+
+<p align="center">
+  进程级透明代理工具 — 通过 DLL 注入 Hook Winsock API，将目标进程的所有网络流量透明转发到 HTTP 代理。
+  <br/>
+  无需修改路由表，无需指定路由规则。
+</p>
+
+<p align="center">
+  <a href="#简介">简介</a>
+  ·
+  <a href="https://github.com/liliBestCoder/ghost-proxifier/releases">下载</a>
+  ·
+  <a href="#构建">构建</a>
+  ·
+  <a href="#使用">基本用法</a>
+</p>
+
+---
 
 > 🚀 **Pro 版本**: 如果你需要一个带现代化 UI、进程规则管理、流量面板等高级功能的版本，请访问 [Ghost Proxifier Pro](https://www.ghostproxifier.com/) 或 [GitHub 仓库](https://github.com/liliBestCoder/ghost-proxifier-pro)。
 
-## 项目背景
+## 简介
 
 日常开发中，经常需要同时使用**科学上网代理**和**公司 VPN** 访问不同的网络资源。比如：
 
