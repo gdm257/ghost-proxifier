@@ -55,6 +55,34 @@ static bool IsNonProxyExternalTcpSocket(SOCKET s) {
     return true; // External TCP socket, not proxy
 }
 
+// --- Traffic counter helpers: wrap real_* calls and increment global stats ---
+static inline int ProxySend(SOCKET s, const char* buf, int len, int flags) {
+    int ret = real_send(s, buf, len, flags);
+    if (ret > 0) g_sentBytes += ret;
+    return ret;
+}
+static inline int ProxyRecv(SOCKET s, char* buf, int len, int flags) {
+    int ret = real_recv(s, buf, len, flags);
+    if (ret > 0) g_recvBytes += ret;
+    return ret;
+}
+static inline int ProxyWSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesSent, DWORD dwFlags,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine) {
+    int ret = real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+    if (ret == 0 && lpNumberOfBytesSent) g_sentBytes += *lpNumberOfBytesSent;
+    return ret;
+}
+static inline int ProxyWSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine) {
+    int ret = real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+    if (ret == 0 && lpNumberOfBytesRecvd) g_recvBytes += *lpNumberOfBytesRecvd;
+    return ret;
+}
+
 BOOL PASCAL hook_ConnectEx(SOCKET s, const struct sockaddr* name, int namelen,
     PVOID lpSendBuffer, DWORD dwSendDataLength,
     LPDWORD lpBytesSent, LPOVERLAPPED lpOverlapped) {
@@ -396,7 +424,7 @@ int WINAPI hook_send(SOCKET s, const char* buf, int len, int flags) {
     {
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
         if (g_ProxyCompletedSockets.count(s)) {
-            return real_send(s, buf, len, flags);
+            return ProxySend(s, buf, len, flags);
         }
     }
 
@@ -413,7 +441,7 @@ int WINAPI hook_send(SOCKET s, const char* buf, int len, int flags) {
             WSASetLastError(WSAECONNRESET);
             return SOCKET_ERROR;
         }
-        return real_send(s, buf, len, flags);
+        return ProxySend(s, buf, len, flags);
     }
 
     // Socket is not pending and not completed — close external TCP to force reconnect
@@ -457,7 +485,7 @@ int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
     {
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
         if (g_ProxyCompletedSockets.count(s)) {
-            return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+            return ProxyWSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
         }
     }
 
@@ -473,7 +501,7 @@ int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
             WSASetLastError(WSAECONNRESET);
             return SOCKET_ERROR;
         }
-        return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+        return ProxyWSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
     }
 
     // Block pre-existing external TCP sockets
@@ -514,7 +542,7 @@ int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
     {
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
         if (g_ProxyCompletedSockets.count(s)) {
-            return real_recv(s, buf, len, flags);
+            return ProxyRecv(s, buf, len, flags);
         }
     }
 
@@ -530,7 +558,7 @@ int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
             WSASetLastError(WSAECONNRESET);
             return SOCKET_ERROR;
         }
-        return real_recv(s, buf, len, flags);
+        return ProxyRecv(s, buf, len, flags);
     }
 
     // Block pre-existing external TCP sockets
@@ -571,7 +599,7 @@ int WINAPI hook_WSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWO
     {
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
         if (g_ProxyCompletedSockets.count(s)) {
-            return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+            return ProxyWSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
         }
     }
 
@@ -587,7 +615,7 @@ int WINAPI hook_WSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWO
             WSASetLastError(WSAECONNRESET);
             return SOCKET_ERROR;
         }
-        return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+        return ProxyWSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
     }
 
     // Block pre-existing external TCP sockets
@@ -855,7 +883,9 @@ int WINAPI hook_closesocket(SOCKET s) {
     }
     {
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
-        g_ProxyCompletedSockets.erase(s);
+        if (g_ProxyCompletedSockets.erase(s) > 0) {
+            g_activeConns--;
+        }
     }
     return real_closesocket(s);
 }

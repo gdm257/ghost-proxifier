@@ -103,6 +103,7 @@ bool CompletePendingHandshake(SOCKET s) {
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, (char*)&opt, sizeof(opt));
 
+    DWORD t0 = GetTickCount();
     bool ok = PerformHttpConnect(s, pp.target_ip.c_str(), pp.target_port, pp.target_family, pp.domain);
 
     // Send any initial data from ConnectEx
@@ -113,7 +114,10 @@ bool CompletePendingHandshake(SOCKET s) {
     }
 
     if (ok) {
-        NetLog("[Proxy] Handshake OK: %s:%d | %s", pp.target_ip.c_str(), pp.target_port, pp.domain.c_str());
+        int lat = (int)(GetTickCount() - t0);
+        g_lastLatency = lat;
+        g_activeConns++;
+        NetLog("[Proxy] Handshake OK: %s:%d | %s (latency %dms)", pp.target_ip.c_str(), pp.target_port, pp.domain.c_str(), lat);
         std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
         g_ProxyCompletedSockets.insert(s);
     }

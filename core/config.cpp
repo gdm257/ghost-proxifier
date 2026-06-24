@@ -116,4 +116,5 @@ void EnvInjectFromConfig() {
     SetEnvironmentVariableA("GHOST_SYNC", g_Config.SyncHandshake ? "1" : "0");
     snprintf(buf, sizeof(buf), "%d", g_LogPort);
     SetEnvironmentVariableA("GHOST_LOG_PORT", buf);
+    SetEnvironmentVariableA("GHOST_STATS_PORT", "45002");
 }

@@ -120,6 +120,14 @@ extern std::atomic<bool> g_ProxyEngineInitialized;
 extern std::mutex g_EngineInitMutex;
 extern std::atomic<int> g_DnsProxyPort;
 
+// --- Traffic stats (reported to CLI via UDP) ---
+extern std::atomic<uint64_t> g_sentBytes;
+extern std::atomic<uint64_t> g_recvBytes;
+extern std::atomic<int> g_lastLatency;
+extern std::atomic<int> g_activeConns;
+extern SOCKET g_StatsSocket;
+extern std::mutex g_StatsMutex;
+
 // --- Pending Proxy (Lazy Handshake) ---
 struct PendingProxy {
     std::string target_ip;
@@ -204,6 +212,7 @@ bool SyncSend(SOCKET s, const char* buf, int len);
 bool SyncRecvResponse(SOCKET s, std::string& resp);
 bool IsKnownDoHServer(const char* ip, int port);
 std::string GetDnsName(const char* buf, int& offset, int total_len);
+DWORD WINAPI StatsThread(LPVOID);
 
 // config.cpp
 void PerformLazyInitialization();

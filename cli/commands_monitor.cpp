@@ -1,7 +1,12 @@
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <stdio.h>
 #include <algorithm>
 #include "utils.h"
+
+#pragma comment(lib, "ws2_32.lib")
 
 static volatile bool g_monitorRunning = true;
 
@@ -39,16 +44,42 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
         SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
 
+    // --- Setup UDP stats listener ---
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET statsSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (statsSock != INVALID_SOCKET) {
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        addr.sin_port = htons(45002);
+        // Bind may fail if another monitor is running — that's OK, we still show process list
+        bind(statsSock, (sockaddr*)&addr, sizeof(addr));
+        // Non-blocking
+        u_long nb = 1;
+        ioctlsocket(statsSock, FIONBIO, &nb);
+
+        // Export for future injections
+        SetEnvironmentVariableA("GHOST_STATS_PORT", "45002");
+    }
+
     printf("Ghost Proxifier - Real-time Traffic Monitor\n");
     printf("Press Ctrl+C to exit\n\n");
 
-    // Store last tick counts to detect new data
-    uint64_t lastTotalUp = 0;
-    uint64_t lastTotalDown = 0;
+    // Hide cursor to prevent flicker
+    printf("\x1b[?25l");
+
+    char statsBuf[2048];
 
     while (g_monitorRunning) {
-        // Move cursor to line 4 (below header) and clear screen from cursor
-        printf("\x1b[3;1H\x1b[J");
+        // Drain any pending stats messages
+        {
+            int n = recv(statsSock, statsBuf, sizeof(statsBuf) - 1, 0);
+            while (n > 0) {
+                UpdateStatsFromMessage(statsBuf, n);
+                n = recv(statsSock, statsBuf, sizeof(statsBuf) - 1, 0);
+            }
+        }
 
         auto procs = EnumerateProcesses();
 
@@ -72,10 +103,13 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
             return (a.up + a.down) > (b.up + b.down);
         });
 
+        // Move cursor to line 3 (below header) — don't clear entire screen
+        printf("\x1b[3;1H");
+
         // Header
-        printf("%-8s %-25s %10s %10s %5s %5s %-12s\n",
+        printf("%-8s %-25s %10s %10s %5s %5s %-12s\x1b[K\n",
                "PID", "Name", "UP", "DOWN", "Conns", "Lat", "Node");
-        printf("%s\n", std::string(80, '-').c_str());
+        printf("%s\x1b[K\n", std::string(80, '-').c_str());
 
         for (auto& p : injected) {
             char upStr[32] = "-";
@@ -91,31 +125,43 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
             for (int i = 0; nameBuf[i]; i++)
                 if (nameBuf[i] == '\n' || nameBuf[i] == '\r') nameBuf[i] = 0;
 
-            printf("%-8lu %-25.25s %10s %10s %5d %5s %-12s\n",
+            printf("%-8lu %-25.25s %10s %10s %5d %5s %-12s\x1b[K\n",
                    p.pid, nameBuf,
                    upStr, downStr,
                    p.conns, latStr,
                    p.node.c_str());
         }
 
+        // Summary line
         char totalUpStr[32], totalDownStr[32];
         FormatBytes(totalUp, totalUpStr, sizeof(totalUpStr));
         FormatBytes(totalDown, totalDownStr, sizeof(totalDownStr));
 
-        printf("\n");
-        printf("Injected: %zu  |  Conns: %d  |  UP: %s  |  DOWN: %s  |  Proxy: %s\n",
+        printf("\n\x1b[K"); // blank line before summary
+        printf("Injected: %zu  |  Conns: %d  |  UP: %s  |  DOWN: %s\x1b[K\n",
                injected.size(), totalConns,
-               totalUpStr, totalDownStr,
-               IsSystemProxyEnabled() ? "ON" : "OFF");
+               totalUpStr, totalDownStr);
 
-        lastTotalUp = totalUp;
-        lastTotalDown = totalDown;
+        // Clear any leftover lines from previous (longer) render
+        printf("\x1b[J");
+
+        // Drain any more stats that arrived during rendering
+        {
+            int n = recv(statsSock, statsBuf, sizeof(statsBuf) - 1, 0);
+            while (n > 0) {
+                UpdateStatsFromMessage(statsBuf, n);
+                n = recv(statsSock, statsBuf, sizeof(statsBuf) - 1, 0);
+            }
+        }
 
         Sleep(1000);
     }
 
-    // Reset console mode
+    // Cleanup: show cursor, reset console
+    printf("\x1b[?25h");
     SetConsoleCtrlHandler(CtrlHandler, FALSE);
+    if (statsSock != INVALID_SOCKET) closesocket(statsSock);
+    WSACleanup();
     printf("\nMonitor stopped.\n");
     return 0;
 }

@@ -136,6 +136,8 @@ static void WriteConfigForDll(const std::wstring& dllPath) {
         f << "sync=" << buf << "\n";
     if (GetEnvironmentVariableA("GHOST_LOG_PORT", buf, sizeof(buf)))
         f << "log_port=" << buf << "\n";
+    if (GetEnvironmentVariableA("GHOST_STATS_PORT", buf, sizeof(buf)))
+        f << "stats_port=" << buf << "\n";
 }
 
 // Direct injection — matches the original ghost_injector.cpp approach.
@@ -345,10 +347,18 @@ static const char* TagColor(const char* tag) {
     return "\x1b[0m";
 }
 
-// Print a single colorized log line
+// Print a single colorized log line. Stats messages are parsed into the
+// global stats map instead of being printed.
 static void PrintLogLine(char* buf, int len) {
     if (len <= 0) return;
     buf[len] = '\0';
+
+    // Stats messages go to the process stats table, not the log output
+    if (strncmp(buf, "[stats]", 7) == 0) {
+        UpdateStatsFromMessage(buf, len);
+        return;
+    }
+
     const char* color = "\x1b[0m";
     const char* p = buf;
     if (*p == '[') { while (*p && *p != ']') p++; if (*p) p++; if (*p == ' ') p++; }
@@ -510,6 +520,7 @@ int cmd_inject(int argc, wchar_t* argv[]) {
                 char portStr[16];
                 snprintf(portStr, sizeof(portStr), "%d", logPort);
                 SetEnvironmentVariableA("GHOST_LOG_PORT", portStr);
+                SetEnvironmentVariableA("GHOST_STATS_PORT", "45002");
             } else {
                 closesocket(logSock);
                 logSock = INVALID_SOCKET;

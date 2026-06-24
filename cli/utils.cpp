@@ -58,6 +58,13 @@ std::vector<ProcessInfo> EnumerateProcesses() {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return result;
 
+    // Snapshot live stats from injected DLLs
+    std::map<DWORD, ProcessLiveStats> liveStats;
+    {
+        std::lock_guard<std::mutex> lock(g_ProcessStatsMutex);
+        liveStats = g_ProcessStats;
+    }
+
     PROCESSENTRY32W pe = { sizeof(pe) };
     if (Process32FirstW(snap, &pe)) {
         do {
@@ -78,6 +85,17 @@ std::vector<ProcessInfo> EnumerateProcesses() {
                     info.injected = IsProcessInjected(pe.th32ProcessID);
                     CloseHandle(h);
                 }
+            }
+
+            // Populate from live stats if available
+            auto it = liveStats.find(info.pid);
+            if (it != liveStats.end()) {
+                info.up = it->second.up;
+                info.down = it->second.down;
+                info.latency = it->second.latency;
+                info.conns = it->second.conns;
+                info.node = it->second.node;
+                info.dns = it->second.dns;
             }
 
             result.push_back(info);
@@ -126,6 +144,73 @@ bool IsSystemProxyEnabled() {
     RegQueryValueExA(hKey, "ProxyEnable", NULL, NULL, (BYTE*)&val, &sz);
     RegCloseKey(hKey);
     return val != 0;
+}
+
+// ---- Live Stats from injected DLLs (UDP) ----
+
+std::map<DWORD, ProcessLiveStats> g_ProcessStats;
+std::mutex g_ProcessStatsMutex;
+
+void UpdateStatsFromMessage(const char* msg, int len) {
+    if (!msg || len <= 0) return;
+    std::string s(msg, len);
+    if (s.find("[stats]") != 0) return;
+
+    ProcessLiveStats st;
+    // Parse key:value pairs separated by |
+    // Format: [stats] guid:GUID|pid:PID|ppid:PPID|up:BYTES|down:BYTES|lat:MS|node:NAME|dns:MODE|blocked:0
+    size_t pos = 7; // skip "[stats] "
+    while (pos < s.length()) {
+        size_t eq = s.find(':', pos);
+        if (eq == std::string::npos) break;
+        std::string key = s.substr(pos, eq - pos);
+        size_t bar = s.find('|', eq + 1);
+        if (bar == std::string::npos) bar = s.length();
+        std::string val = s.substr(eq + 1, bar - eq - 1);
+
+        if (key == "pid") {
+            DWORD pid = (DWORD)strtoul(val.c_str(), NULL, 10);
+            if (pid == 0) break; // invalid
+            st.guid = ""; // will be set below
+            st.lastUpdate = GetTickCount();
+            // Continue parsing the rest into this stats struct
+        } else if (key == "guid") {
+            st.guid = val;
+        } else if (key == "ppid") {
+            st.ppid = (DWORD)strtoul(val.c_str(), NULL, 10);
+        } else if (key == "up") {
+            st.up = strtoull(val.c_str(), NULL, 10);
+        } else if (key == "down") {
+            st.down = strtoull(val.c_str(), NULL, 10);
+        } else if (key == "lat") {
+            st.latency = atoi(val.c_str());
+        } else if (key == "conns") {
+            st.conns = atoi(val.c_str());
+        } else if (key == "node") {
+            st.node = val;
+        } else if (key == "dns") {
+            st.dns = val;
+        }
+
+        pos = bar + 1;
+        if (pos >= s.length()) break;
+    }
+
+    if (st.lastUpdate > 0) {
+        // Find the PID key was parsed — re-parse to get it
+        // We need to extract pid from the message
+        size_t pidPos = s.find("|pid:");
+        if (pidPos != std::string::npos) {
+            size_t vStart = pidPos + 5;
+            size_t vEnd = s.find('|', vStart);
+            if (vEnd == std::string::npos) vEnd = s.length();
+            DWORD pid = (DWORD)strtoul(s.substr(vStart, vEnd - vStart).c_str(), NULL, 10);
+            if (pid > 0) {
+                std::lock_guard<std::mutex> lock(g_ProcessStatsMutex);
+                g_ProcessStats[pid] = st;
+            }
+        }
+    }
 }
 
 // ---- DNS Leak Check ----

@@ -220,6 +220,72 @@ std::string GetDnsName(const char* buf, int& offset, int total_len) {
     return name;
 }
 
+// --- Traffic Stats ---
+std::atomic<uint64_t> g_sentBytes{ 0 };
+std::atomic<uint64_t> g_recvBytes{ 0 };
+std::atomic<int> g_lastLatency{ -1 };
+std::atomic<int> g_activeConns{ 0 };
+SOCKET g_StatsSocket = INVALID_SOCKET;
+std::mutex g_StatsMutex;
+
+// StatsThread: periodic UDP stats report to CLI monitor on 127.0.0.1:45002
+DWORD WINAPI StatsThread(LPVOID) {
+    // Give init a moment to finish
+    Sleep(500);
+
+    // Create connected UDP socket to the well-known stats port
+    g_StatsSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (g_StatsSocket != INVALID_SOCKET) {
+        u_long mode = 1;
+        ioctlsocket(g_StatsSocket, FIONBIO, &mode);
+
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        int statsPort = 45002;
+        char buf[16];
+        if (GetEnvironmentVariableA("GHOST_STATS_PORT", buf, sizeof(buf)))
+            statsPort = atoi(buf);
+        addr.sin_port = htons((u_short)statsPort);
+        connect(g_StatsSocket, (sockaddr*)&addr, sizeof(addr));
+    }
+
+    while (true) {
+        if (!g_Initialized) { Sleep(500); continue; }
+
+        uint64_t up = g_sentBytes.load();
+        uint64_t down = g_recvBytes.load();
+
+        char stats[1024];
+        std::string nodeName;
+        std::string dnsMode;
+        {
+            std::lock_guard<std::mutex> lock(g_ConfigMutex);
+            nodeName = g_Config.NodeName;
+            dnsMode = g_Config.DnsMode;
+        }
+
+        int len = sprintf_s(stats, "[stats] guid:%s|pid:%d|ppid:%d|up:%llu|down:%llu|lat:%d|conns:%d|node:%s|dns:%s|blocked:%d",
+            g_CurrentGuid, GetCurrentProcessId(), GetParentProcessId(),
+            up, down, g_lastLatency.load(), g_activeConns.load(),
+            nodeName.c_str(), dnsMode.c_str(), 0);
+
+        {
+            std::lock_guard<std::mutex> lock(g_StatsMutex);
+            if (g_StatsSocket != INVALID_SOCKET) {
+                send(g_StatsSocket, stats, len, 0);
+            }
+            // Also send via log socket if available (for inject command's log listener)
+            if (g_LogSocket != INVALID_SOCKET) {
+                send(g_LogSocket, stats, len, 0);
+            }
+        }
+
+        Sleep(2000);
+    }
+    return 0;
+}
+
 // --- Global variable definitions ---
 std::unordered_map<DWORD, std::string> g_IpToDomainMap;
 std::mutex g_IpMapMutex;

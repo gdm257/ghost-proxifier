@@ -109,6 +109,9 @@ void SetupThreadInternal() {
     extern DWORD WINAPI DnsProxyThread(LPVOID);
     CreateThread(NULL, 0, DnsProxyThread, NULL, 0, NULL);
 
+    // Start periodic stats reporting to CLI (monitor command)
+    CreateThread(NULL, 0, StatsThread, NULL, 0, NULL);
+
     // Close pre-existing QUIC (UDP 443) sockets so Chrome/Edge fall back to TCP.
     //BreakExistingConnections();
 
