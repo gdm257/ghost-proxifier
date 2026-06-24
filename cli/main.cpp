@@ -20,7 +20,6 @@ void PrintUsage() {
     printf("  config upstream rm <id>             Remove upstream proxy\n");
     printf("  config upstream use <name>          Switch active upstream\n");
     printf("  config dns <server>      Set DNS server\n");
-    printf("  dns check                DNS leak detection\n");
     printf("  monitor                  Real-time traffic monitor (Ctrl+C to quit)\n");
 }
 
@@ -31,7 +30,6 @@ extern int cmd_eject(int argc, wchar_t* argv[]);
 extern int cmd_status(int argc, wchar_t* argv[]);
 extern int cmd_proxy(int argc, wchar_t* argv[]);
 extern int cmd_config(int argc, wchar_t* argv[]);
-extern int cmd_dns(int argc, wchar_t* argv[]);
 extern int cmd_monitor(int argc, wchar_t* argv[]);
 
 int wmain(int argc, wchar_t* argv[]) {
@@ -50,7 +48,6 @@ int wmain(int argc, wchar_t* argv[]) {
     else if (cmd == L"status") result = cmd_status(argc, argv);
     else if (cmd == L"proxy")  result = cmd_proxy(argc, argv);
     else if (cmd == L"config") result = cmd_config(argc, argv);
-    else if (cmd == L"dns")    result = cmd_dns(argc, argv);
     else if (cmd == L"monitor") result = cmd_monitor(argc, argv);
     else {
         PrintUsage();

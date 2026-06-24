@@ -200,13 +200,6 @@ ghost-proxifier config upstream rm myproxy
 ghost-proxifier config dns 1.1.1.1
 ```
 
-### DNS 检测
-
-```cmd
-# DNS 泄露检测
-ghost-proxifier dns check
-```
-
 ### 完整命令
 
 | 命令 | 说明 |
@@ -223,7 +216,6 @@ ghost-proxifier dns check
 | `config upstream rm <name>` | 删除上游代理节点 |
 | `config upstream use <name>` | 切换活跃上游节点 |
 | `config dns <server>` | 设置 DNS 服务器 |
-| `dns check` | DNS 泄露检测 |
 | `monitor` | 实时流量监控 (Ctrl+C 退出) |
 
 ### 日志示例

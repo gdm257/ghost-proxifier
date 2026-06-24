@@ -5,7 +5,6 @@ set(CLI_SOURCES
     commands_config.cpp
     commands_status.cpp
     commands_proxy.cpp
-    commands_dns.cpp
     commands_monitor.cpp
     process_tree.cpp
     utils.cpp
