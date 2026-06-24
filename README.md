@@ -14,7 +14,7 @@
 <p align="center">
   <a href="#背景">背景</a>
   ·
-  <a href="https://github.com/liliBestCoder/ghost-proxifier/releases">下载</a>
+  <a href="https://github.com/liliBestCoder/ghost-proxifier/releases" target="_blank">下载</a>
   ·
   <a href="#构建">构建</a>
   ·
@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  🚀 <a href="https://www.ghostproxifier.com/"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
+  🚀 <a href="https://www.ghostproxifier.com/" target="_blank"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
 </p>
 
 ---
