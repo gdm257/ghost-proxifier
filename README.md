@@ -1,6 +1,6 @@
 <!-- LOGO -->
 <p align="center">
-  <img src="app_icon.ico" alt="Logo" width="96">
+  <img src="app_icon.ico" alt="Logo" width="64">
 </p>
 
 <h1 align="center">Ghost Proxifier</h1>
