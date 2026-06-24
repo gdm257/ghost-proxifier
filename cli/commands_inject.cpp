@@ -471,7 +471,7 @@ int cmd_inject(int argc, wchar_t* argv[]) {
                         SetEnvironmentVariableA("GHOST_PROXY_PORT", addr.substr(colon + 1).c_str());
                     }
                     std::string name = u.value("name", "");
-                    if (!name.empty()) SetEnvironmentVariableA("GHOST_NODE", name.c_str());
+                    SetEnvironmentVariableA("GHOST_NODE", name.empty() ? "Auto" : name.c_str());
                     break;
                 }
             }

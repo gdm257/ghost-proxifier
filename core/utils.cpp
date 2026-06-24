@@ -100,6 +100,67 @@ void NetLog(const char* format, ...) {
     }
 }
 
+// --- BreakExistingConnections: force-close existing TCP connections ---
+void BreakExistingConnections() {
+    DWORD pid = GetCurrentProcessId();
+
+    std::string proxyIP;
+    int proxyPort;
+    {
+        std::lock_guard<std::mutex> lock(g_ConfigMutex);
+        proxyIP = g_Config.ProxyIP;
+        proxyPort = g_Config.ProxyPort;
+    }
+    DWORD proxyAddr = inet_addr(proxyIP.c_str());
+
+    // Get required buffer size for IPv4 TCP connections
+    ULONG size = 0;
+    if (GetExtendedTcpTable(NULL, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != ERROR_INSUFFICIENT_BUFFER)
+        return;
+
+    std::vector<BYTE> buf(size);
+    PMIB_TCPTABLE_OWNER_PID table = (PMIB_TCPTABLE_OWNER_PID)buf.data();
+    if (GetExtendedTcpTable(table, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != NO_ERROR)
+        return;
+
+    int broken = 0;
+    for (DWORD i = 0; i < table->dwNumEntries; i++) {
+        MIB_TCPROW_OWNER_PID& row = table->table[i];
+        if (row.dwOwningPid != pid) continue;
+
+        DWORD localhost = inet_addr("127.0.0.1");
+
+        // Skip localhost connections (internal comms)
+        if (row.dwRemoteAddr == localhost) continue;
+        // Skip connections already to proxy
+        if (row.dwRemoteAddr == proxyAddr && ntohs((u_short)row.dwRemotePort) == (u_short)proxyPort) continue;
+        // Skip listening sockets
+        if (row.dwState == MIB_TCP_STATE_LISTEN) continue;
+        // Skip already closed
+        if (row.dwState == MIB_TCP_STATE_CLOSED) continue;
+        // Skip time_wait (already half-closed)
+        if (row.dwState == MIB_TCP_STATE_TIME_WAIT) continue;
+
+        MIB_TCPROW delRow;
+        delRow.dwState = MIB_TCP_STATE_DELETE_TCB; // 12 — force TCB teardown
+        delRow.dwLocalAddr = row.dwLocalAddr;
+        delRow.dwLocalPort = row.dwLocalPort;
+        delRow.dwRemoteAddr = row.dwRemoteAddr;
+        delRow.dwRemotePort = row.dwRemotePort;
+
+        if (SetTcpEntry(&delRow) == NO_ERROR) {
+            struct in_addr a; a.s_addr = row.dwRemoteAddr;
+            NetLog("[Init] Broken existing connection: %s:%d",
+                inet_ntoa(a), ntohs((u_short)row.dwRemotePort));
+            broken++;
+        }
+    }
+
+    if (broken > 0) {
+        NetLog("[Init] Broken %d existing TCP connections to force proxy path.", broken);
+    }
+}
+
 // --- GetParentProcessId: enumerates the parent PID via NtQueryInformationProcess ---
 DWORD GetParentProcessId() {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());

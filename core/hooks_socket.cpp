@@ -4,6 +4,57 @@
 // Socket Hook Implementations
 // ============================================================================
 
+// --- IsNonProxyExternalTcpSocket: check if a socket is a TCP socket connected ---
+// --- to an external address (not localhost, not proxy). Used to block pre-    ---
+// --- existing connections that bypass the proxy.                               ---
+static bool IsNonProxyExternalTcpSocket(SOCKET s) {
+    // Only block TCP sockets
+    int type = 0;
+    int optlen = sizeof(type);
+    if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) != 0) return false;
+    if (type != SOCK_STREAM) return false;
+
+    sockaddr_storage peer;
+    int plen = sizeof(peer);
+    if (getpeername(s, (sockaddr*)&peer, &plen) != 0) return false;
+
+    // Allow localhost
+    if (peer.ss_family == AF_INET) {
+        sockaddr_in* p4 = (sockaddr_in*)&peer;
+        if (p4->sin_addr.s_addr == inet_addr("127.0.0.1")) return false;
+    } else if (peer.ss_family == AF_INET6) {
+        sockaddr_in6* p6 = (sockaddr_in6*)&peer;
+        if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+            struct in_addr addr4;
+            memcpy(&addr4, (char*)&p6->sin6_addr + 12, 4);
+            if (addr4.s_addr == inet_addr("127.0.0.1")) return false;
+        } else {
+            // Check for ::1
+            bool is_loopback = true;
+            for (int i = 0; i < 15; i++) {
+                if (p6->sin6_addr.u.Byte[i] != 0) { is_loopback = false; break; }
+            }
+            if (is_loopback && p6->sin6_addr.u.Byte[15] == 1) return false;
+        }
+    }
+
+    // Allow connections to the proxy itself
+    std::string proxyIP;
+    int proxyPort;
+    {
+        std::lock_guard<std::mutex> lock(g_ConfigMutex);
+        proxyIP = g_Config.ProxyIP;
+        proxyPort = g_Config.ProxyPort;
+    }
+    if (peer.ss_family == AF_INET) {
+        sockaddr_in* p4 = (sockaddr_in*)&peer;
+        if (p4->sin_addr.s_addr == inet_addr(proxyIP.c_str()) && ntohs(p4->sin_port) == proxyPort)
+            return false;
+    }
+
+    return true; // External TCP socket, not proxy
+}
+
 BOOL PASCAL hook_ConnectEx(SOCKET s, const struct sockaddr* name, int namelen,
     PVOID lpSendBuffer, DWORD dwSendDataLength,
     LPDWORD lpBytesSent, LPOVERLAPPED lpOverlapped) {
@@ -340,12 +391,60 @@ int WINAPI hook_connect(SOCKET s, const sockaddr* name, int namelen) {
 // --- Lazy handshake send hooks ---
 int WINAPI hook_send(SOCKET s, const char* buf, int len, int flags) {
     if (!g_Initialized) return real_send(s, buf, len, flags);
-    if (!CompletePendingHandshake(s)) {
+
+    // Fast path: already completed proxy handshake
+    {
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        if (g_ProxyCompletedSockets.count(s)) {
+            return real_send(s, buf, len, flags);
+        }
+    }
+
+    // Check if this socket has a pending handshake
+    bool hasPending = false;
+    {
+        std::lock_guard<std::mutex> lock(g_PendingMutex);
+        hasPending = g_PendingProxySockets.count(s) > 0;
+    }
+
+    if (hasPending) {
+        // Complete the handshake (adds to g_ProxyCompletedSockets on success)
+        if (!CompletePendingHandshake(s)) {
+            WSASetLastError(WSAECONNRESET);
+            return SOCKET_ERROR;
+        }
+        return real_send(s, buf, len, flags);
+    }
+
+    // Socket is not pending and not completed — close external TCP to force reconnect
+    if (IsNonProxyExternalTcpSocket(s)) {
+        NetLog("[Proxy] Closing non-proxy socket to force reconnect");
+        real_closesocket(s);
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
-    int ret = real_send(s, buf, len, flags);
-    return ret;
+
+    // Block QUIC on connected UDP sockets (pre-existing before injection)
+    {
+        int type = 0, optlen = sizeof(type);
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) == 0 && type == SOCK_DGRAM) {
+            sockaddr_storage peer;
+            int plen = sizeof(peer);
+            if (getpeername(s, (sockaddr*)&peer, &plen) == 0) {
+                int port = 0;
+                if (peer.ss_family == AF_INET) port = ntohs(((sockaddr_in*)&peer)->sin_port);
+                else if (peer.ss_family == AF_INET6) port = ntohs(((sockaddr_in6*)&peer)->sin6_port);
+                if (port == 443) {
+                    NetLog("[QUIC] Closing connected QUIC socket (send) to force TCP fallback");
+                    real_closesocket(s);
+                    WSASetLastError(WSAECONNREFUSED);
+                    return SOCKET_ERROR;
+                }
+            }
+        }
+    }
+
+    return real_send(s, buf, len, flags);
 }
 
 int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
@@ -353,29 +452,132 @@ int WINAPI hook_WSASend(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
     LPWSAOVERLAPPED lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine) {
     if (!g_Initialized) return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
-    if (!CompletePendingHandshake(s)) {
+
+    // Fast path: already completed proxy handshake
+    {
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        if (g_ProxyCompletedSockets.count(s)) {
+            return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+        }
+    }
+
+    // Check if this socket has a pending handshake
+    bool hasPending = false;
+    {
+        std::lock_guard<std::mutex> lock(g_PendingMutex);
+        hasPending = g_PendingProxySockets.count(s) > 0;
+    }
+
+    if (hasPending) {
+        if (!CompletePendingHandshake(s)) {
+            WSASetLastError(WSAECONNRESET);
+            return SOCKET_ERROR;
+        }
+        return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+    }
+
+    // Block pre-existing external TCP sockets
+    if (IsNonProxyExternalTcpSocket(s)) {
+        NetLog("[Proxy] Closing non-proxy socket (WSASend) to force reconnect");
+        real_closesocket(s);
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
+
+    // Block QUIC on connected UDP sockets (pre-existing before injection)
+    {
+        int type = 0, optlen = sizeof(type);
+        if (getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen) == 0 && type == SOCK_DGRAM) {
+            sockaddr_storage peer;
+            int plen = sizeof(peer);
+            if (getpeername(s, (sockaddr*)&peer, &plen) == 0) {
+                int port = 0;
+                if (peer.ss_family == AF_INET) port = ntohs(((sockaddr_in*)&peer)->sin_port);
+                else if (peer.ss_family == AF_INET6) port = ntohs(((sockaddr_in6*)&peer)->sin6_port);
+                if (port == 443) {
+                    NetLog("[QUIC] Closing connected QUIC socket (WSASend) to force TCP fallback");
+                    real_closesocket(s);
+                    WSASetLastError(WSAECONNREFUSED);
+                    return SOCKET_ERROR;
+                }
+            }
+        }
+    }
+
     return real_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
 }
 
 int WINAPI hook_recv(SOCKET s, char* buf, int len, int flags) {
     if (!g_Initialized) return real_recv(s, buf, len, flags);
-    if (!CompletePendingHandshake(s)) {
+
+    // Fast path: already completed proxy handshake
+    {
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        if (g_ProxyCompletedSockets.count(s)) {
+            return real_recv(s, buf, len, flags);
+        }
+    }
+
+    // Check if this socket has a pending handshake
+    bool hasPending = false;
+    {
+        std::lock_guard<std::mutex> lock(g_PendingMutex);
+        hasPending = g_PendingProxySockets.count(s) > 0;
+    }
+
+    if (hasPending) {
+        if (!CompletePendingHandshake(s)) {
+            WSASetLastError(WSAECONNRESET);
+            return SOCKET_ERROR;
+        }
+        return real_recv(s, buf, len, flags);
+    }
+
+    // Block pre-existing external TCP sockets
+    if (IsNonProxyExternalTcpSocket(s)) {
+        NetLog("[Proxy] Closing non-proxy socket (recv) to force reconnect");
+        real_closesocket(s);
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
-    int ret = real_recv(s, buf, len, flags);
-    return ret;
+
+    return real_recv(s, buf, len, flags);
 }
 
 int WINAPI hook_WSARecv(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine) {
     if (!g_Initialized) return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
-    if (!CompletePendingHandshake(s)) {
+
+    // Fast path: already completed proxy handshake
+    {
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        if (g_ProxyCompletedSockets.count(s)) {
+            return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+        }
+    }
+
+    // Check if this socket has a pending handshake
+    bool hasPending = false;
+    {
+        std::lock_guard<std::mutex> lock(g_PendingMutex);
+        hasPending = g_PendingProxySockets.count(s) > 0;
+    }
+
+    if (hasPending) {
+        if (!CompletePendingHandshake(s)) {
+            WSASetLastError(WSAECONNRESET);
+            return SOCKET_ERROR;
+        }
+        return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+    }
+
+    // Block pre-existing external TCP sockets
+    if (IsNonProxyExternalTcpSocket(s)) {
+        NetLog("[Proxy] Closing non-proxy socket (WSARecv) to force reconnect");
+        real_closesocket(s);
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
     }
+
     return real_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
 }
 
@@ -397,7 +599,8 @@ int WINAPI hook_sendto(SOCKET s, const char* buf, int len, int flags,
 
         // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
         if (target_port == 443) {
-            NetLog("[QUIC] hook_sendto: Blocking UDP 443 to force TCP fallback");
+            NetLog("[QUIC] hook_sendto: Closing QUIC socket to force TCP fallback");
+            real_closesocket(s);
             WSASetLastError(WSAECONNREFUSED);
             return SOCKET_ERROR;
         }
@@ -448,7 +651,8 @@ int WINAPI hook_WSASendTo(
 
         // Block QUIC (UDP 443) to force Chrome/Edge fallback to TCP
         if (target_port == 443) {
-            NetLog("[QUIC] hook_WSASendTo: Blocking UDP 443 to force TCP fallback");
+            NetLog("[QUIC] hook_WSASendTo: Closing QUIC socket to force TCP fallback");
+            real_closesocket(s);
             WSASetLastError(WSAECONNREFUSED);
             return SOCKET_ERROR;
         }
@@ -608,6 +812,10 @@ int WINAPI hook_closesocket(SOCKET s) {
     {
         std::lock_guard<std::mutex> lock(g_PendingMutex);
         g_PendingProxySockets.erase(s);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        g_ProxyCompletedSockets.erase(s);
     }
     return real_closesocket(s);
 }

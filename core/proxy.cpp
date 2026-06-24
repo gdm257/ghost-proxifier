@@ -4,6 +4,10 @@
 std::unordered_map<SOCKET, PendingProxy> g_PendingProxySockets;
 std::mutex g_PendingMutex;
 
+// --- Proxy-Completed Sockets ---
+std::unordered_set<SOCKET> g_ProxyCompletedSockets;
+std::mutex g_ProxyCompletedMutex;
+
 // --- PerformHttpConnect: HTTP CONNECT tunnel through proxy ---
 bool PerformHttpConnect(SOCKET s, const char* ip_str, int port, int family, const std::string& domain) {
     char request[512];
@@ -110,6 +114,8 @@ bool CompletePendingHandshake(SOCKET s) {
 
     if (ok) {
         NetLog("[Proxy] Handshake OK: %s:%d | %s", pp.target_ip.c_str(), pp.target_port, pp.domain.c_str());
+        std::lock_guard<std::mutex> lock(g_ProxyCompletedMutex);
+        g_ProxyCompletedSockets.insert(s);
     }
     else {
         NetLog("[Proxy] Handshake FAILED: %s:%d | %s", pp.target_ip.c_str(), pp.target_port, pp.domain.c_str());

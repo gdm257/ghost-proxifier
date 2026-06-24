@@ -12,11 +12,8 @@ std::atomic<int> g_DnsProxyPort{ 0 };
 
 // --- PerformLazyInitializationInternal: background engine setup ---
 void PerformLazyInitializationInternal() {
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-
-    extern DWORD WINAPI DnsProxyThread(LPVOID);
-    CreateThread(NULL, 0, DnsProxyThread, NULL, 0, NULL);
+    // DNS proxy thread is already started in SetupThreadInternal.
+    // This function exists as a gate target — no additional init needed.
 }
 
 // --- PerformLazyInitialization: thread-safe lazy init gate ---

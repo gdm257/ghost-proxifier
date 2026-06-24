@@ -11,12 +11,15 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <atomic>
 #include <algorithm>
 #include <ctime>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#include <iphlpapi.h>
 #include <windns.h>
 #include "MinHook.h"
 
@@ -106,7 +109,7 @@ extern std::mutex g_IpMapMutex;
 
 // --- Thread-safe Config ---
 struct GlobalConfig {
-    std::string NodeName = "Direct";
+    std::string NodeName = "Auto";
     std::string ProxyIP = "127.0.0.1";
     int ProxyPort = 2080;
     std::string DnsIP = "8.8.8.8";
@@ -135,6 +138,10 @@ struct PendingProxy {
 };
 extern std::unordered_map<SOCKET, PendingProxy> g_PendingProxySockets;
 extern std::mutex g_PendingMutex;
+
+// --- Proxy-Completed Sockets (passed HTTP CONNECT handshake) ---
+extern std::unordered_set<SOCKET> g_ProxyCompletedSockets;
+extern std::mutex g_ProxyCompletedMutex;
 
 // --- DNS over TCP Worker ---
 struct DnsReq {
@@ -205,6 +212,7 @@ bool SyncSend(SOCKET s, const char* buf, int len);
 bool SyncRecvResponse(SOCKET s, std::string& resp);
 bool IsKnownDoHServer(const char* ip, int port);
 std::string GetDnsName(const char* buf, int& offset, int total_len);
+void BreakExistingConnections();
 
 // config.cpp
 void PerformLazyInitialization();

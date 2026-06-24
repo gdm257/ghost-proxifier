@@ -73,6 +73,25 @@ void SetupThreadInternal() {
     real_WSAIoctl = (WSAIoctl_t)GetProcAddress(h, "WSAIoctl");
     real_GetAddrInfoExW = (GetAddrInfoExW_t)GetProcAddress(h, "GetAddrInfoExW");
 
+    // Eagerly hook ConnectEx — app may have already cached the function pointer
+    // via WSAIoctl(SIO_GET_EXTENSION_FUNCTION_POINTER) before injection.
+    // If we wait for the lazy WSAIoctl hook, cached pointers bypass us entirely.
+    {
+        SOCKET tmp = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (tmp != INVALID_SOCKET) {
+            GUID gCE = WSAID_CONNECTEX;
+            LPFN_CONNECTEX pCE = NULL;
+            DWORD bytes;
+            if (WSAIoctl(tmp, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                &gCE, sizeof(gCE), &pCE, sizeof(pCE), &bytes, NULL, NULL) == 0 && pCE) {
+                if (MH_CreateHook((void*)pCE, (void*)hook_ConnectEx, (void**)&real_ConnectEx) == MH_OK) {
+                    NetLog("[Init] ConnectEx eagerly hooked (before app cached pointer)");
+                }
+            }
+            closesocket(tmp);
+        }
+    }
+
     // Load dnsapi.dll for DnsQuery hooks (Cygwin/MSYS2 getaddrinfo internally uses these)
     HMODULE hDnsapi = LoadLibraryA("dnsapi.dll");
     if (hDnsapi) {
@@ -85,9 +104,13 @@ void SetupThreadInternal() {
     InstallSocketHooks();
     InstallDnsHooks();
 
+    // Start DNS proxy thread early so g_DnsProxyPort is ready before hooks fire
     InitSharedDnsCache();
     MH_EnableHook(MH_ALL_HOOKS);
     g_Initialized = true;
+
+    extern DWORD WINAPI DnsProxyThread(LPVOID);
+    CreateThread(NULL, 0, DnsProxyThread, NULL, 0, NULL);
 
     // Export config to env vars so child processes inherit proxy settings.
     EnvInjectFromConfig();
@@ -136,11 +159,6 @@ extern "C" __declspec(dllexport) void WINAPI GhostInit() {
 // and the exported GhostInit (called by shellcode) runs in the first thread
 // for Cygwin compatibility.
 HMODULE g_hDllModule = NULL;
-
-static DWORD WINAPI GhostInitThread(LPVOID) {
-    GhostInit();
-    return 0;
-}
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
