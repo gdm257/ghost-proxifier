@@ -116,29 +116,6 @@ bool IsProcessInjected(DWORD pid) {
 
 // ---- System Proxy ----
 
-void SetSystemProxy(bool enable, const std::string& proxyAddr) {
-    HKEY hKey;
-    LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-        0, KEY_SET_VALUE, &hKey);
-    if (res != ERROR_SUCCESS) return;
-
-    if (enable) {
-        DWORD val = 1;
-        RegSetValueExA(hKey, "ProxyEnable", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
-        RegSetValueExA(hKey, "ProxyServer", 0, REG_SZ,
-                       (BYTE*)proxyAddr.c_str(), (DWORD)proxyAddr.size() + 1);
-    } else {
-        DWORD val = 0;
-        RegSetValueExA(hKey, "ProxyEnable", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
-    }
-    RegCloseKey(hKey);
-
-    // Notify Windows of settings change
-    InternetSetOptionA(NULL, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
-    InternetSetOptionA(NULL, INTERNET_OPTION_REFRESH, NULL, 0);
-}
-
 bool IsSystemProxyEnabled() {
     HKEY hKey;
     LONG res = RegOpenKeyExA(HKEY_CURRENT_USER,

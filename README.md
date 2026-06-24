@@ -210,7 +210,6 @@ ghost-proxifier config dns 1.1.1.1
 | `inject --tree <name>` | 等待进程启动，同时注入所有子进程 |
 | `eject <pid>` | 从进程卸载 ghost_core.dll |
 | `status` | 显示全局代理状态和流量统计 |
-| `proxy on\|off` | 开启/关闭系统代理 |
 | `config show` | 显示当前配置 |
 | `config upstream add <name> <addr>` | 添加上游代理节点 |
 | `config upstream rm <name>` | 删除上游代理节点 |

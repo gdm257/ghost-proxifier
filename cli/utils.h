@@ -37,8 +37,6 @@ std::vector<DWORD> GetProcessTree(DWORD parentPid);
 // Check if a PID has ghost_core.dll loaded
 bool IsProcessInjected(DWORD pid);
 
-// System proxy toggle (registry + InternetSetOption)
-void SetSystemProxy(bool enable, const std::string& proxyAddr = "127.0.0.1:7897");
 bool IsSystemProxyEnabled();
 
 // DNS leak check
