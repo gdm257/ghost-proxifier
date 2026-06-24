@@ -63,13 +63,12 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
         SetEnvironmentVariableA("GHOST_STATS_PORT", "45002");
     }
 
-    printf("Ghost Proxifier - Real-time Traffic Monitor\n");
-    printf("Press Ctrl+C to exit\n\n");
-
-    // Hide cursor to prevent flicker
+    // Clear screen and hide cursor once at start
+    printf("\x1b[2J\x1b[H");
     printf("\x1b[?25l");
 
     char statsBuf[2048];
+    int prevDataLines = 0; // total lines rendered last time (header + data + summary)
 
     while (g_monitorRunning) {
         // Drain any pending stats messages
@@ -103,13 +102,19 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
             return (a.up + a.down) > (b.up + b.down);
         });
 
-        // Move cursor to line 3 (below header) — don't clear entire screen
-        printf("\x1b[3;1H");
+        // Move cursor to home — overwrite everything in-place
+        printf("\x1b[H");
 
-        // Header
+        // Static header
+        printf("Ghost Proxifier - Real-time Traffic Monitor    (Ctrl+C to exit)\x1b[K\n");
+        printf("\x1b[K\n"); // blank line
+
+        // Column header
         printf("%-8s %-25s %10s %10s %5s %5s %-12s\x1b[K\n",
                "PID", "Name", "UP", "DOWN", "Conns", "Lat", "Node");
         printf("%s\x1b[K\n", std::string(80, '-').c_str());
+
+        int curLines = 4; // lines written so far
 
         for (auto& p : injected) {
             char upStr[32] = "-";
@@ -130,20 +135,29 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
                    upStr, downStr,
                    p.conns, latStr,
                    p.node.c_str());
+            curLines++;
         }
 
-        // Summary line
+        // Summary
         char totalUpStr[32], totalDownStr[32];
         FormatBytes(totalUp, totalUpStr, sizeof(totalUpStr));
         FormatBytes(totalDown, totalDownStr, sizeof(totalDownStr));
 
-        printf("\n\x1b[K"); // blank line before summary
+        printf("\x1b[K\n"); // blank line
         printf("Injected: %zu  |  Conns: %d  |  UP: %s  |  DOWN: %s\x1b[K\n",
                injected.size(), totalConns,
                totalUpStr, totalDownStr);
+        curLines += 2;
 
-        // Clear any leftover lines from previous (longer) render
-        printf("\x1b[J");
+        // If we have fewer lines than last time, clear the leftover rows
+        if (curLines < prevDataLines) {
+            for (int i = curLines; i < prevDataLines; i++) {
+                printf("\x1b[K\n");
+            }
+            // Move cursor back up so next iteration's \x1b[H goes to the right place
+            printf("\x1b[%dA", prevDataLines - curLines);
+        }
+        prevDataLines = curLines;
 
         // Drain any more stats that arrived during rendering
         {
@@ -157,11 +171,11 @@ int cmd_monitor(int argc, wchar_t* argv[]) {
         Sleep(1000);
     }
 
-    // Cleanup: show cursor, reset console
-    printf("\x1b[?25h");
+    // Cleanup: show cursor, clear screen
+    printf("\x1b[?25h\x1b[2J\x1b[H");
     SetConsoleCtrlHandler(CtrlHandler, FALSE);
     if (statsSock != INVALID_SOCKET) closesocket(statsSock);
     WSACleanup();
-    printf("\nMonitor stopped.\n");
+    printf("Monitor stopped.\n");
     return 0;
 }
