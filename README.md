@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  🚀 <a href="https://www.ghostproxifier.com/" target="_blank"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
+  🚀 <a href="https://ghostproxifier.com/" target="_blank"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
 </p>
 
 ---
