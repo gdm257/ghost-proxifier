@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="#简介">简介</a>
+  <a href="#背景">背景</a>
   ·
   <a href="https://github.com/liliBestCoder/ghost-proxifier/releases">下载</a>
   ·
@@ -27,7 +27,7 @@
 
 ---
 
-## 简介
+## 背景
 
 日常开发中，经常需要同时使用**科学上网代理**和**公司 VPN** 访问不同的网络资源。比如：
 
