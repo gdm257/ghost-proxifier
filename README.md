@@ -168,30 +168,17 @@ compile.bat
 ### 基本用法
 
 ```cmd
-# 列出所有进程及代理状态
-ghost-proxifier list
-
-# 按进程名注入
+# 等待进程启动后立即注入（推荐：无旧连接、无 QUIC 缓存问题）
 ghost-proxifier inject chrome.exe
 
-# 按 PID 注入
+# 注入已有进程
 ghost-proxifier inject 1234
 
-# 注入进程及其所有子进程（递归）
+# 注入进程及其所有子进程
 ghost-proxifier inject --tree chrome.exe
 
 # 卸载 DLL
 ghost-proxifier eject 1234
-
-# 查看全局状态
-ghost-proxifier status
-
-# 系统代理开关
-ghost-proxifier proxy on
-ghost-proxifier proxy off
-
-# 实时流量监控
-ghost-proxifier monitor
 ```
 
 ### 配置管理
@@ -225,8 +212,9 @@ ghost-proxifier dns check
 | 命令 | 说明 |
 |------|------|
 | `list` | 列出所有进程及代理状态 |
-| `inject <pid\|name>` | 注入 ghost_core.dll 到指定进程 |
-| `inject --tree <pid\|name>` | 注入进程及其所有子进程 |
+| `inject <name>` | 等待进程启动，瞬间注入（干净启动，无旧连接） |
+| `inject <pid>` | 注入已有进程 |
+| `inject --tree <name>` | 等待进程启动，同时注入所有子进程 |
 | `eject <pid>` | 从进程卸载 ghost_core.dll |
 | `status` | 显示全局代理状态和流量统计 |
 | `proxy on\|off` | 开启/关闭系统代理 |
@@ -251,58 +239,26 @@ ghost-proxifier dns check
 
 ## 实战示例
 
-### 代理 Antigravity AI 编程助手
-
-Antigravity 的 AI 大模型通信走 `language_server_windows_x64.exe` 进程，直接注入即可：
-
-```cmd
-ghost-proxifier.exe -p language_server_windows_x64 -u 127.0.0.1:2080
-```
-
-注入后，AI 对话、代码补全等所有请求都会通过代理转发，无需配置 TUN 或系统代理。
-
 ### 代理 Chrome 浏览器
 
-Chrome 的网络请求由 **Network Service** 子进程处理。首先找到它的 PID：
+```cmd
+# 1. 先运行此命令，等待 Chrome 启动
+ghost-proxifier inject chrome.exe
+# 输出: Watching for chrome.exe... (new instances will be injected immediately)
+
+# 2. 再打开 Chrome，插件立即注入
+# 输出: New process detected: PID 12345 — injecting...
+```
+
+所有标签页流量自动走代理。谷歌搜索、Gmail、YouTube 均可正常访问。
+
+### 代理 Antigravity AI 编程助手
 
 ```cmd
-wmic process where "name='chrome.exe'" get ProcessId,CommandLine | findstr "network.mojom.NetworkService"
+ghost-proxifier inject language_server_windows_x64.exe
 ```
 
-输出示例：
-```
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --type=utility --utility-sub-type=network.mojom.NetworkService ...  17964
-```
-
-然后用 PID 注入：
-
-```cmd
-ghost-proxifier.exe -p 17964 -u 127.0.0.1:2080
-```
-
-> **提示：** 建议在 Chrome 设置中关闭安全 DNS（`chrome://settings/security`），避免 DoH 重试带来的额外延迟。
-
-### 验证注入状态
-
-注入后可以随时查看哪些进程已加载了 `ghost_core.dll`：
-
-```cmd
-ghost-proxifier.exe -s
-```
-
-输出示例：
-```
-=========================================================
-  Injected Processes (ghost_core.dll)
-=========================================================
-  PID       Process Name
----------------------------------------------------------
-  17964     chrome.exe
-  3188      language_server_windows_x64.exe
----------------------------------------------------------
-  Total: 2 process(es)
-=========================================================
-```
+然后重启 Antigravity。AI 对话、代码补全等请求通过代理转发，无需配置 TUN 或系统代理。
 
 ## 已测试应用
 
@@ -316,25 +272,17 @@ ghost-proxifier.exe -s
 
 | 函数 | 用途 |
 |------|------|
-| `connect` / `WSAConnect` / `ConnectEx` | 重定向到代理，延迟握手 |
-| `send` / `WSASend` | 首次发送前完成 HTTP CONNECT |
-| `sendto` / `WSASendTo` | DNS 请求重定向到 Local DNS Proxy |
-| `recvfrom` / `WSARecvFrom` | DNS 响应拦截 & IP-域名映射 |
-| `getaddrinfo` / `GetAddrInfoW` / `gethostbyname` | DNS 解析通过代理转发 |
-
-## 项目结构
-
-```
-ghost-proxifier/
-├── ghost_core.cpp       # Hook DLL 核心源码（DNS/连接/发送 Hook）
-├── ghost_injector.cpp   # 注入器 & 日志服务器
-├── CMakeLists.txt       # 构建配置
-├── compile.bat          # 一键编译脚本
-├── MinHook/             # MinHook 库（函数 Hook 引擎）
-└── bin/                 # 编译产物
-    ├── ghost_core.dll
-    └── ghost-proxifier.exe
-```
+| `connect` / `WSAConnect` / `ConnectEx` | TCP 连接重定向到代理，ConnectEx 主动 Hook（防止缓存指针绕过） |
+| `send` / `WSASend` | 首次发送前完成 HTTP CONNECT 握手；关闭非代理 TCP socket 强制重连 |
+| `recv` / `WSARecv` | 拦截非代理 socket 的接收，强制应用通过代理重连 |
+| `sendto` / `WSASendTo` | DNS UDP 53 重定向到 Local DNS Proxy；QUIC UDP 443 阻断 + 关闭 socket |
+| `recvfrom` / `WSARecvFrom` | DNS 响应拦截、IP-域名映射、DNS 来源地址伪装 |
+| `getaddrinfo` / `GetAddrInfoW` / `gethostbyname` | DNS 域名解析走代理 DNS-over-TCP |
+| `GetAddrInfoExW` / `DnsQuery_W` / `DnsQuery_A` / `DnsQueryEx` | 异步 DNS API 拦截（Windows 8+、Chromium、Cygwin） |
+| `closesocket` | 清理 PendingMap 和代理完成状态 |
+| `WSAIoctl` | ConnectEx 延迟 Hook（兜底） |
+| `DoH 阻断` | 识别已知 DoH 服务器 IP（8.8.8.8:443 等），返回拒绝强制回退标准 DNS |
+| `QUIC 阻断` | UDP 443 send/sendto/recv 全路径阻断，返回 `WSAENETUNREACH` 触发 TCP 回退 |
 
 ## License
 

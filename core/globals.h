@@ -44,11 +44,6 @@ typedef int(WINAPI* closesocket_t)(SOCKET s);
 typedef INT(WSAAPI* getaddrinfo_t)(PCSTR, PCSTR, const ADDRINFOA*, PADDRINFOA*);
 typedef INT(WSAAPI* GetAddrInfoW_t)(PCWSTR, PCWSTR, const ADDRINFOW*, PADDRINFOW*);
 typedef struct hostent* (WSAAPI* gethostbyname_t)(const char*);
-typedef BOOL(WINAPI* CreateProcessW_t)(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
-typedef BOOL(WINAPI* CreateProcessA_t)(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
-typedef BOOL(WINAPI* CreateProcessAsUserW_t)(HANDLE hToken, LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
-typedef BOOL(WINAPI* CreateProcessInternalW_t)(HANDLE hToken, LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFOW lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation, PHANDLE phNewToken);
-typedef NTSTATUS(NTAPI* NtCreateUserProcess_t)(PHANDLE ProcessHandle, PHANDLE ThreadHandle, ACCESS_MASK ProcessDesiredAccess, ACCESS_MASK ThreadDesiredAccess, PVOID ProcessObjectAttributes, PVOID ThreadObjectAttributes, ULONG ProcessFlags, ULONG ThreadFlags, PVOID ProcessParameters, PVOID CreateInfo, PVOID AttributeList);
 typedef int(WINAPI* WSAIoctl_t)(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 typedef INT (WSAAPI* GetAddrInfoExW_t)(PCWSTR pName, PCWSTR pServiceName, DWORD dwNameSpace, LPGUID lpNspId, const ADDRINFOEXW* pHints, PADDRINFOEXW* ppResult, struct timeval* timeout, LPOVERLAPPED lpOverlapped, LPLOOKUPSERVICE_COMPLETION_ROUTINE lpCompletionRoutine, LPHANDLE lpNameHandle);
 typedef DNS_STATUS (WINAPI* DnsQuery_W_t)(PCWSTR pszName, WORD wType, DWORD Options, PIP4_ARRAY pExtra, PDNS_RECORD* ppQueryResults, PVOID* pReserved);
@@ -91,11 +86,6 @@ extern DnsQuery_W_t              real_DnsQuery_W;
 extern DnsQuery_A_t              real_DnsQuery_A;
 extern DnsFree_t                 real_DnsFree;
 extern DnsQueryEx_t              real_DnsQueryEx;
-extern CreateProcessW_t          real_CreateProcessW;
-extern CreateProcessA_t          real_CreateProcessA;
-extern CreateProcessAsUserW_t    real_CreateProcessAsUserW;
-extern CreateProcessInternalW_t  real_CreateProcessInternalW;
-extern NtCreateUserProcess_t     real_NtCreateUserProcess;
 extern WSAIoctl_t                real_WSAIoctl;
 
 // --- Global state ---
@@ -214,7 +204,6 @@ bool SyncSend(SOCKET s, const char* buf, int len);
 bool SyncRecvResponse(SOCKET s, std::string& resp);
 bool IsKnownDoHServer(const char* ip, int port);
 std::string GetDnsName(const char* buf, int& offset, int total_len);
-void BreakExistingConnections();
 
 // config.cpp
 void PerformLazyInitialization();

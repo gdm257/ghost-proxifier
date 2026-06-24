@@ -35,11 +35,6 @@ DnsQuery_W_t              real_DnsQuery_W = NULL;
 DnsQuery_A_t              real_DnsQuery_A = NULL;
 DnsFree_t                 real_DnsFree = NULL;
 DnsQueryEx_t              real_DnsQueryEx = NULL;
-CreateProcessW_t          real_CreateProcessW = NULL;
-CreateProcessA_t          real_CreateProcessA = NULL;
-CreateProcessAsUserW_t    real_CreateProcessAsUserW = NULL;
-CreateProcessInternalW_t  real_CreateProcessInternalW = NULL;
-NtCreateUserProcess_t     real_NtCreateUserProcess = NULL;
 WSAIoctl_t                real_WSAIoctl = NULL;
 
 // ============================================================================
