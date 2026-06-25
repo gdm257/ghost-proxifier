@@ -6,29 +6,9 @@
 <h1 align="center">Ghost Proxifier</h1>
 
 <p align="center">
-  <a href="#中文">🇨🇳 中文</a>
-  &nbsp;|&nbsp;
-  <a href="#english">🇬🇧 English</a>
-  &nbsp;·
   <a href="https://github.com/liliBestCoder/ghost-proxifier/releases" target="_blank">Download</a>
   &nbsp;·
   <a href="https://ghostproxifier.com/" target="_blank">Website</a>
-</p>
-
-<p align="center">
-  <a href="#背景">背景</a>
-  ·
-  <a href="#为什么需要-ghost-proxifier">为什么需要</a>
-  ·
-  <a href="#整体架构">整体架构</a>
-  ·
-  <a href="#核心机制">核心机制</a>
-  ·
-  <a href="#构建">构建</a>
-  ·
-  <a href="#使用">使用</a>
-  ·
-  <a href="#完整命令">完整命令</a>
 </p>
 
 <p align="center">
@@ -39,9 +19,8 @@
   🚀 <a href="https://ghostproxifier.com/" target="_blank"><b>Ghost Proxifier Pro</b></a> — 带现代化 UI、进程规则管理、流量面板等高级功能
 </p>
 
----
-
-<h2 id="中文">🇨🇳 中文</h2>
+<details open>
+<summary><b>🇨🇳 中文</b></summary>
 
 ## 背景
 
@@ -316,9 +295,10 @@ ghost-proxifier inject language_server_windows_x64.exe
 | DoH 阻断 | 识别已知 DoH 服务器 IP（8.8.8.8:443 等），返回拒绝强制回退标准 DNS |
 | QUIC 阻断 | UDP 443 send/sendto/recv 全路径阻断，返回 `WSAENETUNREACH` 触发 TCP 回退 |
 
----
+</details>
 
-<h2 id="english">🇬🇧 English</h2>
+<details>
+<summary><b>🇬🇧 English</b></summary>
 
 ## Background
 
@@ -593,6 +573,8 @@ Then restart Antigravity. AI conversations, code completions, etc. are forwarded
 | `WSAIoctl` | Delayed ConnectEx hook (safety net) |
 | DoH Block | Identify known DoH server IPs (8.8.8.8:443, etc.), return refused to force standard DNS fallback |
 | QUIC Block | Full-path UDP 443 blocking (send/sendto/recv), return `WSAENETUNREACH` to trigger TCP fallback |
+
+</details>
 
 ## License
 
