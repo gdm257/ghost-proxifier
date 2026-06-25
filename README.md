@@ -16,6 +16,22 @@
 </p>
 
 <p align="center">
+  <a href="#背景">背景</a>
+  ·
+  <a href="#为什么需要-ghost-proxifier">为什么需要</a>
+  ·
+  <a href="#整体架构">整体架构</a>
+  ·
+  <a href="#核心机制">核心机制</a>
+  ·
+  <a href="#构建">构建</a>
+  ·
+  <a href="#使用">使用</a>
+  ·
+  <a href="#完整命令">完整命令</a>
+</p>
+
+<p align="center">
   进程级透明代理工具 — 通过 DLL 注入 Hook Winsock API，将目标进程的所有网络流量透明转发到 HTTP 代理。无需修改路由表，无需指定路由规则。
 </p>
 
