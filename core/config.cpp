@@ -54,7 +54,7 @@ void LoadConfigFromEnv() {
             g_Config.DnsIP = buf;
         }
         if (GetEnvironmentVariableA("GHOST_DNS_PORT", buf, sizeof(buf))) {
-            g_Config.DnsProxyPort = atoi(buf);
+            g_Config.DnsPort = atoi(buf);
         }
         if (GetEnvironmentVariableA("GHOST_DNS_MODE", buf, sizeof(buf))) {
             g_Config.DnsMode = buf;
@@ -91,7 +91,7 @@ void LoadConfigFromEnv() {
                 if (key == "proxy")      g_Config.ProxyIP = val;
                 else if (key == "port")  g_Config.ProxyPort = atoi(val.c_str());
                 else if (key == "dns")   g_Config.DnsIP = val;
-                else if (key == "dns_port") g_Config.DnsProxyPort = atoi(val.c_str());
+                else if (key == "dns_port") g_Config.DnsPort = atoi(val.c_str());
                 else if (key == "dns_mode") g_Config.DnsMode = val;
                 else if (key == "node")  g_Config.NodeName = val;
                 else if (key == "sync")  g_Config.SyncHandshake = (val == "1");
@@ -109,7 +109,7 @@ void EnvInjectFromConfig() {
     snprintf(buf, sizeof(buf), "%d", g_Config.ProxyPort);
     SetEnvironmentVariableA("GHOST_PROXY_PORT", buf);
     SetEnvironmentVariableA("GHOST_DNS", g_Config.DnsIP.c_str());
-    snprintf(buf, sizeof(buf), "%d", g_Config.DnsProxyPort);
+    snprintf(buf, sizeof(buf), "%d", g_Config.DnsPort);
     SetEnvironmentVariableA("GHOST_DNS_PORT", buf);
     SetEnvironmentVariableA("GHOST_DNS_MODE", g_Config.DnsMode.c_str());
     SetEnvironmentVariableA("GHOST_NODE", g_Config.NodeName.c_str());

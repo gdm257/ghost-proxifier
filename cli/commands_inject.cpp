@@ -552,7 +552,10 @@ int cmd_inject(int argc, wchar_t* argv[]) {
         if (cfg.contains("dns") && cfg["dns"].is_object()) {
             std::string server = cfg["dns"].value("server", "8.8.8.8");
             SetEnvironmentVariableA("GHOST_DNS", server.c_str());
-            SetEnvironmentVariableA("GHOST_DNS_PORT", "53");
+            int dnsPort = cfg["dns"].value("port", 53);
+            char dnsPortBuf[16];
+            snprintf(dnsPortBuf, sizeof(dnsPortBuf), "%d", dnsPort);
+            SetEnvironmentVariableA("GHOST_DNS_PORT", dnsPortBuf);
             bool dnsEnabled = cfg["dns"].value("enabled", true);
             SetEnvironmentVariableA("GHOST_DNS_MODE", dnsEnabled ? "dot" : "system");
         }
