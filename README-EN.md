@@ -211,6 +211,9 @@ ghost-proxifier inject 1234
 # Inject into a process and all its children
 ghost-proxifier inject --tree chrome.exe
 
+# Inject multiple targets at once (PIDs and names can be mixed; PIDs inject now, names are watched)
+ghost-proxifier inject 1234 5678 chrome.exe
+
 # Unload DLL
 ghost-proxifier eject 1234
 ```
@@ -239,9 +242,8 @@ ghost-proxifier config dns 1.1.1.1
 | Command | Description |
 |------|------|
 | `list` | List all processes and their proxy status |
-| `inject <name>` | Wait for process launch, inject instantly (clean start) |
-| `inject <pid>` | Inject into an existing process |
-| `inject --tree <name>` | Wait for process launch, inject into all child processes as well |
+| `inject <name\|pid> [name\|pid ...]` | Inject one or more targets; names are watched (clean start), PIDs inject instantly, mix allowed |
+| `inject --tree <name\|pid> ...` | Same as above, also inject child processes of each PID |
 | `eject <pid>` | Unload ghost_core.dll from the process |
 | `status` | Show global proxy status and traffic statistics |
 | `config show` | Show current configuration |

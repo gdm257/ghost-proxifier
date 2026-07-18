@@ -399,9 +399,9 @@ static void RunLogListener(SOCKET logSock, size_t injectedCount) {
 }
 
 // Watch + Log listener for default inject mode.
-// Polls for new instances of targetName and injects immediately on discovery,
+// Polls for new instances of the target names and injects immediately on discovery,
 // while simultaneously showing live UDP logs from injected processes.
-static void RunWatchLogListener(SOCKET logSock, const std::wstring& targetName, bool treeMode, int alreadyInjected) {
+static void RunWatchLogListener(SOCKET logSock, const std::vector<std::wstring>& targetNames, bool treeMode, int alreadyInjected) {
     SetConsoleCtrlHandler(LogCtrlHandler, TRUE);
 
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -411,19 +411,22 @@ static void RunWatchLogListener(SOCKET logSock, const std::wstring& targetName, 
 
     // Snapshot already-known PIDs so we don't double-inject
     std::set<DWORD> knownPids;
-    {
-        auto initial = FindPidsByName(targetName);
+    for (const auto& name : targetNames) {
+        auto initial = FindPidsByName(name);
         knownPids.insert(initial.begin(), initial.end());
     }
 
     if (alreadyInjected > 0) {
-        printf("\n--- Live Log (%d process(es) injected) + Watching for new %ls ---\n",
-               alreadyInjected, targetName.c_str());
+        printf("\n--- Live Log (%d process(es) injected) + Watching for new instances ---\n",
+               alreadyInjected);
     } else {
-        printf("\nWatching for %ls... (new instances will be injected immediately)\n", targetName.c_str());
+        printf("\nWatching for: ");
+        for (size_t i = 0; i < targetNames.size(); i++)
+            printf("%ls%s", targetNames[i].c_str(), i + 1 < targetNames.size() ? ", " : "");
+        printf("... (new instances will be injected immediately)\n");
         if (!knownPids.empty()) {
-            printf("Note: %zu existing %ls process(es) detected — use --now to inject them instead.\n",
-                   knownPids.size(), targetName.c_str());
+            printf("Note: %zu existing process(es) detected — pass their PIDs to inject them now.\n",
+                   knownPids.size());
         }
     }
     printf("Press Ctrl+C to stop.\n\n");
@@ -437,7 +440,11 @@ static void RunWatchLogListener(SOCKET logSock, const std::wstring& targetName, 
         DWORD tick = GetTickCount();
         if (tick - lastPoll >= 200) {
             lastPoll = tick;
-            auto current = FindPidsByName(targetName);
+            std::vector<DWORD> current;
+            for (const auto& name : targetNames) {
+                auto matched = FindPidsByName(name);
+                current.insert(current.end(), matched.begin(), matched.end());
+            }
             for (auto pid : current) {
                 if (knownPids.find(pid) == knownPids.end()) {
                     knownPids.insert(pid);
@@ -476,9 +483,10 @@ static void RunWatchLogListener(SOCKET logSock, const std::wstring& targetName, 
 }
 
 // ---- cmd_inject ----
-// Usage: inject <pid>               — inject existing process immediately
-//        inject <name>              — watch for process to start, inject instantly
-//        inject --tree <pid|name>   — also inject child processes
+// Usage: inject <pid> [pid ...]         — inject existing processes immediately
+//        inject <name> [name ...]       — watch for processes to start, inject instantly
+//        inject --tree <pid|name> ...   — also inject child processes
+//        Targets may mix PIDs and names; PIDs inject first, names are watched.
 
 int cmd_inject(int argc, wchar_t* argv[]) {
     bool treeMode = false;
@@ -490,16 +498,22 @@ int cmd_inject(int argc, wchar_t* argv[]) {
     }
 
     if (argc <= argIdx) {
-        fprintf(stderr, "Usage: ghost-proxifier inject [--tree] <pid|name>\n");
+        fprintf(stderr, "Usage: ghost-proxifier inject [--tree] <pid|name> [pid|name ...]\n");
         return 1;
     }
 
-    // Check if argument is a numeric PID (inject existing, no watch)
-    wchar_t* end = nullptr;
-    DWORD numericPid = wcstoul(argv[argIdx], &end, 10);
-    bool isNumericPid = (end && *end == 0 && numericPid > 0);
-
-    std::wstring targetName = argv[argIdx];
+    // Collect targets: numeric PIDs are injected immediately, names enter watch
+    // mode. A mix is allowed — PIDs inject first, then we watch the names.
+    std::vector<DWORD> numericPids;
+    std::vector<std::wstring> watchNames;
+    for (int i = argIdx; i < argc; i++) {
+        wchar_t* end = nullptr;
+        DWORD numericPid = wcstoul(argv[i], &end, 10);
+        if (end && *end == 0 && numericPid > 0)
+            numericPids.push_back(numericPid);
+        else
+            watchNames.emplace_back(argv[i]);
+    }
 
     // Allocate UDP log listener port (OS picks a free port)
     SOCKET logSock = INVALID_SOCKET;
@@ -561,37 +575,40 @@ int cmd_inject(int argc, wchar_t* argv[]) {
         }
     }
 
-    if (isNumericPid) {
-        // Numeric PID: inject existing process immediately
-        std::vector<DWORD> pids;
-        pids.push_back(numericPid);
+    // Expand numeric PIDs (with optional child tree), then inject them up front
+    std::vector<DWORD> injectPids;
+    for (auto pid : numericPids) {
+        injectPids.push_back(pid);
         if (treeMode) {
-            auto children = GetProcessTree(numericPid);
-            pids.insert(pids.end(), children.begin(), children.end());
+            auto children = GetProcessTree(pid);
+            injectPids.insert(injectPids.end(), children.begin(), children.end());
         }
+    }
 
-        printf("Injecting %zu process(es)...\n", pids.size());
-
-        int successCount = 0;
-        for (auto pid : pids) {
+    int successCount = 0;
+    if (!injectPids.empty()) {
+        printf("Injecting %zu process(es)...\n", injectPids.size());
+        for (auto pid : injectPids) {
             if (InjectOne(pid)) successCount++;
         }
-        printf("Done: %d succeeded, %zu failed\n", successCount, pids.size() - successCount);
+        printf("Done: %d succeeded, %zu failed\n", successCount, injectPids.size() - successCount);
+    }
 
+    // Named targets: watch for new instances and inject on discovery
+    if (!watchNames.empty()) {
         if (logSock != INVALID_SOCKET) {
-            RunLogListener(logSock, successCount);
+            RunWatchLogListener(logSock, watchNames, treeMode, successCount);
             closesocket(logSock);
         }
-        return (successCount == pids.size()) ? 0 : 1;
+        return 0;
     }
 
-    // Process name: watch mode — wait for process to start, inject instantly
-    // before it creates any connections
+    // Pure numeric mode: show logs from the processes we just injected
     if (logSock != INVALID_SOCKET) {
-        RunWatchLogListener(logSock, targetName, treeMode, 0);
+        RunLogListener(logSock, successCount);
         closesocket(logSock);
     }
-    return 0;
+    return (successCount == (int)injectPids.size()) ? 0 : 1;
 }
 
 // ---- cmd_eject ----

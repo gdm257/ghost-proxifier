@@ -212,6 +212,9 @@ ghost-proxifier inject 1234
 # 注入进程及其所有子进程
 ghost-proxifier inject --tree chrome.exe
 
+# 一次注入多个目标（PID 与名称可混用，PID 立即注入，名称进入监听）
+ghost-proxifier inject 1234 5678 chrome.exe
+
 # 卸载 DLL
 ghost-proxifier eject 1234
 ```
@@ -240,9 +243,8 @@ ghost-proxifier config dns 1.1.1.1
 | 命令 | 说明 |
 |------|------|
 | `list` | 列出所有进程及代理状态 |
-| `inject <name>` | 等待进程启动，瞬间注入（干净启动，无旧连接） |
-| `inject <pid>` | 注入已有进程 |
-| `inject --tree <name>` | 等待进程启动，同时注入所有子进程 |
+| `inject <name\|pid> [name\|pid ...]` | 注入一个或多个目标；名称进入监听（干净启动），PID 立即注入，可混用 |
+| `inject --tree <name\|pid> ...` | 同上，并对每个 PID 的子进程一并注入 |
 | `eject <pid>` | 从进程卸载 ghost_core.dll |
 | `status` | 显示全局代理状态和流量统计 |
 | `config show` | 显示当前配置 |
