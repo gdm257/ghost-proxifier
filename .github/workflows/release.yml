@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build x64
+        run: |
+          cmake -B build_x64 -G "Visual Studio 17 2022" -A x64
+          cmake --build build_x64 --config Release
+
+      - name: Build x86
+        run: |
+          cmake -B build_x86 -G "Visual Studio 17 2022" -A Win32
+          cmake --build build_x86 --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item config.json bin/
+          Push-Location bin
+          Compress-Archive -Path @(
+            'ghost-proxifier.exe',
+            'ghost_core_x64.dll',
+            'ghost_core_x86.dll',
+            'ghost_launcher_x64.exe',
+            'ghost_launcher_x86.exe',
+            'ghost_dns_dump.exe',
+            'config.json'
+          ) -DestinationPath ../ghost-proxifier-amd64.zip -Force
+          Pop-Location
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          ghost-proxifier-amd64.zip
+          --title "${{ github.ref_name }}"
+          --generate-notes
